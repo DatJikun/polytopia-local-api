@@ -68,6 +68,7 @@ def slim(obs: dict[str, Any]) -> dict[str, Any]:
                     "id": it.get("id"),
                     "x": it.get("x"),
                     "y": it.get("y"),
+                    "name": it.get("name"),
                     "tribe": it.get("tribe"),
                     "owner": it.get("owner"),
                 }

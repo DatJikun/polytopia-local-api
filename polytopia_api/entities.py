@@ -31,6 +31,17 @@ def classify_tribe(rgb: list[int] | tuple[int, int, int]) -> str:
     # Imperius royal blue — G well below B, not cyan
     if b >= 110 and b >= r + 40 and g <= min(b - 35, 125) and r <= 95:
         return "imperius"
+    # Vengir wine / dark purple (Disrof etc.) — not grey Bardur, not water
+    if (
+        35 <= max(r, g, b) <= 125
+        and b >= 45
+        and g <= 75
+        and r <= 115
+        and b >= g + 10
+        and r >= g
+        and abs(r - b) <= 45
+    ):
+        return "vengir"
     # Bardur dark wood — not forest green, not near-black water shade
     if (
         55 <= max(r, g, b) <= 145
@@ -131,6 +142,42 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
     return out[:16]
 
 
+def plate_name(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> str:
+    """OCR the white nameplate. Empty if tesseract misses (tests / tiny plates)."""
+    try:
+        from pathlib import Path
+
+        from PIL import Image
+
+        from . import driver
+    except Exception:
+        return ""
+    h, w = arr.shape[:2]
+    x0 = max(0, int(cx - bw // 2 - 8))
+    x1 = min(w, cx + bw // 2 + 8)
+    y0 = max(0, int(cy - max(6, bh // 2) - 4))
+    y1 = min(h, cy + max(6, bh // 2) + 4)
+    if x1 - x0 < 12 or y1 - y0 < 6:
+        return ""
+    crop = Image.fromarray(arr[y0:y1, x0:x1].astype("uint8"), "RGB")
+    try:
+        text = driver.ocr_image(
+            driver._prep_ocr(crop, scale=3, invert=True),
+            Path("/tmp/polytopia-plate.png"),
+            psm=7,
+            whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        )
+    except Exception:
+        return ""
+    raw = "".join(ch for ch in (text or "") if ch.isalpha())
+    if len(raw) < 3:
+        return ""
+    low = raw.lower()
+    if low in {"score", "stars", "turn", "train", "capture", "polytopia", "next", "settings"}:
+        return ""
+    return raw[:18]
+
+
 def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
     """White nameplates with a tribe-colored building above. Drops water/UI foam."""
     y0, y1, x0, x1 = _map_bounds(arr)
@@ -158,16 +205,23 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         if bw / bh < 1.7:
             continue
         tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up), radius=8)
-        if tribe == "unknown":
+        name = plate_name(arr, cx, cy, bw, bh)
+        if tribe == "unknown" and not name:
             continue
         own = tribe == _own_tribe()
-        if not own:
+        if tribe == "unknown":
+            own = False
+        if not own and not name:
             # Sand / yellow UI next to a white streak is not an Oumaji city.
             if n < max(70, int(round(90 * s))) or bw < max(32, int(40 * s)):
                 continue
         conf = 0.72 if own else 0.62
         if tribe == "imperius":
             conf = 0.55
+        if name:
+            conf = max(conf, 0.78)
+        if tribe == "unknown":
+            conf = 0.70 if name else 0.50
         if conf < 0.55:
             continue
         cities.append(
@@ -180,14 +234,15 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "n": n,
                 "w": bw,
                 "h": bh,
+                "name": name or None,
                 "tribe": tribe,
-                "owner": _owner_of(tribe),
+                "owner": "own" if own else "enemy",
                 "confidence": conf,
                 "rgb": rgb,
             }
         )
     cities.sort(key=lambda c: (-float(c["confidence"]), -int(c["n"])))
-    return cities[:6]
+    return cities[:8]
 
 
 def find_villages(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:

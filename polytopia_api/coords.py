@@ -74,6 +74,27 @@ def too_close_to_end_turn(name: str, pt: tuple[int, int] | None = None) -> bool:
     return (x - end[0]) ** 2 + (y - end[1]) ** 2 < DOCK_MIN_SEP ** 2
 
 
+def in_dock_zone(x: int, y: int) -> bool:
+    """Bottom-right chrome including End Turn. Raw map clicks must not land here."""
+    w, h = frame()
+    if y >= int(h * 0.88) and x >= int(w * 0.52):
+        return True
+    end = point("END_TURN")
+    return (int(x) - end[0]) ** 2 + (int(y) - end[1]) ** 2 < 56 ** 2
+
+
+def dock_zone() -> dict[str, Any]:
+    w, h = frame()
+    return {
+        "x0": int(w * 0.52),
+        "y0": int(h * 0.88),
+        "x1": w,
+        "y1": h,
+        "end_turn": list(point("END_TURN")),
+        "hint": "computerUse must not click this rect — use POST /end-turn",
+    }
+
+
 _BUILTIN_EMPIRICAL: dict[tuple[int, int], dict[str, tuple[int, int]]] = {
     (1280, 800): dock_buttons((765, 746)),
 }
@@ -327,4 +348,5 @@ def layout_info() -> dict[str, Any]:
         "dock_min_sep": DOCK_MIN_SEP,
         "tech_end_dist": tech_end_dist,
         "tech_too_close": too_close_to_end_turn("TECH_TREE", tech),
+        "dock_zone": dock_zone(),
     }

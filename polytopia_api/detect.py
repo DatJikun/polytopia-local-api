@@ -159,14 +159,18 @@ def _cluster_params(arr: np.ndarray, radius: int, min_size: int) -> tuple[int, i
 
 
 def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
-    """Large brand-blue blobs in the confirm band."""
-    ys, xs = _mask_in(arr, DOIT_LO, DOIT_HI, y0=560, y1=920, x0=800, x1=1450)
-    rad, mn = _cluster_params(arr, 40, 80)
-    clusters = _cluster(ys, xs, radius=rad, min_size=mn)
-    out = []
-    for n, cx, cy in clusters:
-        out.append({"kind": "do_it", "x": cx, "y": cy, "n": n})
-    return out
+    """Capture / DO IT — live-frame lower UI, not 2/3 of (1117, 681)."""
+    h, w = arr.shape[:2]
+    y0, y1 = int(h * 0.38), int(h * 0.92)
+    x0, x1 = int(w * 0.28), int(w * 0.98)
+    region = arr[y0:y1, x0:x1]
+    if region.size == 0:
+        return []
+    m = np.all((region >= DOIT_LO) & (region <= DOIT_HI), axis=2)
+    ys, xs = np.where(m)
+    rad, mn = _cluster_params(arr, 32, 50)
+    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
+    return [{"kind": "do_it", "x": cx, "y": cy, "n": n} for n, cx, cy in clusters]
 
 
 def find_train_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
@@ -206,6 +210,44 @@ def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:
         if is_water_rgb(pr, pg, pb):
             continue
         marks.append({"kind": "move", "x": cx, "y": cy, "n": n, "rgb": [pr, pg, pb]})
+    return marks
+
+
+def is_attack_rgb(r: int, g: int, b: int) -> bool:
+    """Red attack hex — not lime HP, not Oumaji yellow, not water."""
+    if r < 165 or g > 115 or b > 120:
+        return False
+    if r < g + 50 or r < b + 40:
+        return False
+    return not is_water_rgb(r, g, b)
+
+
+def find_attack_marks(arr: np.ndarray) -> list[dict[str, Any]]:
+    """Red hexes after selecting a unit that can attack."""
+    y0, y1, x0, x1 = _map_bounds(arr)
+    region = arr[y0:y1, x0:x1]
+    r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
+    m = (
+        (r >= 165)
+        & (g <= 115)
+        & (b <= 120)
+        & ((r - g) >= 50)
+        & ((r - b) >= 40)
+        & ~((g >= 155) & (g >= r + 40))
+    )
+    ys, xs = np.where(m)
+    rad, mn = _cluster_params(arr, 22, 12)
+    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
+    h, w = arr.shape[:2]
+    max_n = max(50, int(round(280 * (h * w) / (coords.BASE_W * coords.BASE_H))))
+    marks = []
+    for n, cx, cy in clusters:
+        if n > max_n:
+            continue
+        pr, pg, pb = (int(v) for v in arr[cy, cx])
+        if not is_attack_rgb(pr, pg, pb):
+            continue
+        marks.append({"kind": "attack", "x": cx, "y": cy, "n": n, "rgb": [pr, pg, pb]})
     return marks
 
 
@@ -268,6 +310,7 @@ def overlay_flags(arr: np.ndarray) -> dict[str, Any]:
         "do_it_blobs": blobs,
         "capture_blobs": blobs,
         "train_blobs": train_blobs,
+        "attack_marks": find_attack_marks(arr)[:16],
     }
 
 
@@ -277,5 +320,6 @@ def observe_pixels(im: Image.Image) -> dict[str, Any]:
     return {
         "overlay": flags,
         "move_marks": find_move_marks(arr)[:12],
+        "attack_marks": flags.get("attack_marks") or find_attack_marks(arr)[:16],
         "fruit": find_fruit(arr)[:10],
     }

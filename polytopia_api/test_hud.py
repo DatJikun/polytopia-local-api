@@ -45,6 +45,8 @@ def test_parse_unit():
     assert u["capture_soon"] and not u["capture"] and u["village"]
     u = parse_unit_panel("Train\nChoose a unit.")
     assert u["train"]
+    u = parse_unit_panel("Bardur Raft\nSelect a blue mark to move.")
+    assert u["unit"] == "raft" and u["can_move"]
 
 
 def test_water_vs_move():
@@ -139,6 +141,9 @@ def test_entities_on_synthetic_map():
     # enemy (Oumaji) city
     d.rectangle((1180, 360, 1240, 420), fill=(210, 180, 60))
     d.rectangle((1160, 430, 1260, 448), fill=(245, 245, 240))
+    # enemy (Vengir) city — Disrof-like wine building
+    d.rectangle((480, 360, 540, 420), fill=(70, 35, 80))
+    d.rectangle((460, 430, 560, 448), fill=(245, 245, 240))
     # unit HP bar
     d.rectangle((700, 500, 728, 505), fill=(90, 210, 50))
     # village hut
@@ -154,14 +159,16 @@ def test_entities_on_synthetic_map():
     assert units, units
     assert any(abs(u["x"] - 714) < 25 for u in units)
     assert all("tribe" in u and "owner" in u for u in units)
-    assert len(cities) >= 2, cities
+    assert len(cities) >= 3, cities
     owners = {c["owner"] for c in cities}
     assert "own" in owners and "enemy" in owners, cities
     tribes = {c["tribe"] for c in cities}
     assert "bardur" in tribes and "oumaji" in tribes, cities
+    assert "vengir" in tribes, cities
     assert villages, villages
     assert classify_tribe((210, 180, 60)) == "oumaji"
     assert classify_tribe((90, 85, 80)) == "bardur"
+    assert classify_tribe((70, 35, 80)) == "vengir"
     assert classify_tribe((30, 40, 28)) == "unknown"  # grass ≠ Bardur city
     assert classify_tribe((58, 199, 249)) == "unknown"  # water ≠ Imperius
     assert classify_tribe((143, 255, 255)) == "unknown"
@@ -184,11 +191,12 @@ def test_capture_and_recruit_targets():
     coords.set_frame(1920, 1200)
     assert capture_target({"overlay": {}, "ready": {}, "unit": {}}) is None
     obs = {
-        "overlay": {"do_it_blobs": [{"x": 10, "y": 20}], "train_blobs": []},
+        "overlay": {"do_it_blobs": [{"x": 10, "y": 20, "n": 40}], "train_blobs": []},
         "ready": {"capture": True},
         "unit": {"capture": True},
     }
     assert capture_target(obs) == (10, 20)
+    assert capture_target({"overlay": {}, "ready": {"capture": True}, "unit": {"capture": True}}) is None
     obs = {
         "overlay": {"train_blobs": [{"x": 3, "y": 4}], "do_it_blobs": []},
         "ready": {"train": True},
@@ -213,6 +221,7 @@ def test_mcp_lists_local_tools():
         "local_observe",
         "local_select_unit",
         "local_move_to",
+        "local_attack",
         "local_capture",
         "local_recruit",
         "local_end_turn",
@@ -579,6 +588,32 @@ def test_find_train_blob_1280():
     assert abs(blobs[0]["y"] - 530) < 30
 
 
+def test_attack_marks_and_strike():
+    from polytopia_api.combat import can_strike
+    from polytopia_api.detect import find_attack_marks, is_attack_rgb
+
+    assert is_attack_rgb(210, 60, 55)
+    assert not is_attack_rgb(90, 210, 50)
+    im = Image.new("RGB", (1280, 800), (20, 20, 20))
+    d = ImageDraw.Draw(im)
+    d.rectangle((600, 400, 640, 430), fill=(210, 60, 55))
+    marks = find_attack_marks(as_rgb(im))
+    assert marks, marks
+    raft = can_strike("raft", (100, 400), (600, 410), "city", (1280, 800), marks)
+    assert raft["ok"] is False and raft["reason"] == "naval_no_land"
+    melee = can_strike("warrior", (560, 410), (620, 415), "city", (1280, 800), marks)
+    assert melee["ok"] is True
+
+
+def test_dock_zone_blocks_end_turn_pixels():
+    coords.reset()
+    coords.set_frame(1280, 800)
+    assert coords.in_dock_zone(765, 746)
+    assert not coords.in_dock_zone(400, 400)
+    zone = coords.dock_zone()
+    assert zone["x0"] > 500 and zone["y0"] > 650
+
+
 if __name__ == "__main__":
     test_parse_hud()
     test_parse_unit()
@@ -599,4 +634,6 @@ if __name__ == "__main__":
     test_observe_hud_floor_from_tfile_without_latest()
     test_snapshot_dir_ignores_empty_cwd()
     test_find_train_blob_1280()
+    test_attack_marks_and_strike()
+    test_dock_zone_blocks_end_turn_pixels()
     print("ok")

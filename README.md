@@ -41,8 +41,9 @@ python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 1. `GET /health` — okno + `layout.screen.END_TURN [765,746]`; Tech ≥64 px od End Turn (`tech_too_close: false`).
 2. `POST /click {"name":"TECH_TREE"}` (albo `POST /tech`) — nigdy offset obok End Turn.
 3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnymi id** i kolorem plemienia; `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr. `hud.turn_trusted` jest **false** gdy OCR tury jest poniżej last labeled/clocked (`turn_floor` z `latest.json`, najwyższego `T{n}.json`, albo `POLYTOPIA_TURN=`); `turn` wtedy `null`, `turn_ocr` zostaje (np. 2 przy T26). `stale` / `missing` gdy cache. `turn_diff.alerts`.
-4. Mapa: `POST /recruit {"city_id":"c0"}` — klika **nameplate** miasta, potem wykryty blob TRAIN (nie 2/3 z 1920, to na 1280 jest środek mapy). Radial jednostek nadal na mapie.
-5. `POST /end-turn` — snapshot. **Stale HUD nie nazywa pliku** (`T4.json` przy T24). Podaj `{"turn":25}` albo po pierwszym labelu zegar `last+1`. Bez tego: `untrusted-*.json` + `ok: false`.
+4. Mapa: `POST /attack {"from_id":"u0","to_id":"c1"}` (czerwone hexy + `hp_dropped`). `POST /capture {"city_id":"c1"}` gdy unit **stoi ON** mieście (blob Capture, nie scaled DO IT). `POST /recruit {"city_id":"c0"}` — nameplate → TRAIN blob.
+5. `POST /end-turn` — snapshot. **Stale HUD nie nazywa pliku**. Podaj `{"turn":25}` albo zegar `last+1`.
+6. Raw `POST /click` w strefie docka (prawy dół / End Turn) jest **zabroniony** — computerUse nie może kończyć tury. `layout.dock_zone` w `/health`.
 
 ## Diff tura→tura (kontrola)
 
@@ -68,7 +69,8 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 | `local_hud` | `GET /hud` |
 | `local_select_unit` | `POST /select-unit` `{"id":"u0"}` / `{"city_id":"c0"}` / `{"x","y"}` |
 | `local_move_to` | `POST /move-to` `{"city_id":"c1"}` albo `{"x","y"}`, opcjonalnie `from_id` |
-| `local_capture` | `POST /capture` `{"city_id":"c1"}` |
+| `local_attack` | `POST /attack` `{"from_id":"u0","to_id":"c1"}` — czerwone hexy + `hp_dropped` |
+| `local_capture` | `POST /capture` `{"city_id":"c1"}` — unit ON mieście, blob Capture |
 | `local_recruit` | `POST /recruit` `{"city_id":"c0"}` — nameplate → TRAIN blob; radial na mapie |
 | `local_end_turn` | `POST /end-turn` `{"turn":25}` gdy HUD stale |
 | `local_click` | `POST /click` `{"name":"TECH_TREE"}` albo `{"x","y"}` |
@@ -81,7 +83,9 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 `GET /observe` (screen pixels, `hits_space: "screen"`):
 
 - `units[]` — HP-bar, `id` `u0`…, `tribe` / `owner`
-- `cities` / `cities_own` / `cities_enemy` — nameplate + kolor plemienia (id trzymają się klatek, gdy blob ruszy <56 px)
+- `cities` / `cities_own` / `cities_enemy` — nameplate + kolor plemienia (Bardur/Oumaji/Vengir) + `name` z OCR gdy się uda; id po nazwie też (`Disrof`)
+- `attack_marks[]` — czerwone hexy ataku
+- `selected_unit` — typ z panelu, `range`, `naval`, `land_attack`
 - `villages[]` — puste, chyba że `POLYTOPIA_VILLAGES=1`
 - `fog_edge[]`
 - `ready.capture` / `ready.train` / `ready.move` / `ready.harvest`

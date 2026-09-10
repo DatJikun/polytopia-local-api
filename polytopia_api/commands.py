@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from . import combat
 from . import coords
 from . import driver
 from . import snapshot
@@ -123,38 +124,60 @@ def move_to(
 
 
 def capture_target(obs: dict[str, Any]) -> tuple[int, int] | None:
-    blobs = (obs.get("overlay") or {}).get("capture_blobs") or (obs.get("overlay") or {}).get("do_it_blobs") or []
-    if blobs:
-        return int(blobs[0]["x"]), int(blobs[0]["y"])
-    if obs.get("ready", {}).get("capture") or (obs.get("unit") or {}).get("capture"):
-        return tuple(coords.DO_IT)
+    """Live Capture / DO IT blob only. Never scaled 1920 coords."""
     overlay = obs.get("overlay") or {}
+    blobs = overlay.get("capture_blobs") or overlay.get("do_it_blobs") or []
+    if blobs:
+        best = max(blobs, key=lambda b: int(b.get("n") or 0))
+        return int(best["x"]), int(best["y"])
     if overlay.get("do_it_pixel") or overlay.get("capture_pixel"):
         return tuple(coords.DO_IT)
     return None
 
 
 def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]:
-    """Press Capture / DO IT. Pass city_id to stand-select the city first."""
+    """Capture when a unit stands ON the city. Building first (the unit), then plate."""
     opened = None
-    if city_id:
-        opened = select_unit(id=city_id, city_id=city_id, space=space)
-        if not opened.get("ok"):
-            return {**opened, "name": "capture"}
-    before = remember() or observe()
+    hit = _resolve(city_id, space) if city_id else None
+    if city_id and not hit:
+        return {"ok": False, "name": "capture", "reason": f"no entity {city_id}", "city_id": city_id}
+    tried: list[dict[str, Any]] = []
+    last_obs = remember()
+    if hit:
+        x = int(hit["x"])
+        building = int(hit["y"])
+        plate = int(hit.get("plate_y") or hit["y"])
+        points = [(x, building, "building")]
+        if abs(plate - building) >= 6:
+            points.append((x, plate, "plate"))
+        for cx, cy, where in points:
+            opened = {**_click(cx, cy, space="screen"), "where": where}
+            _sleep(0.7)
+            last_obs = observe()
+            target = capture_target(last_obs)
+            tried.append({"where": where, "x": cx, "y": cy, "capture": target is not None})
+            if target is not None or (last_obs.get("unit") or {}).get("capture"):
+                break
+    before = last_obs or remember() or observe()
     target = capture_target(before)
     if target is None:
         return {
             "ok": False,
             "name": "capture",
-            "reason": "capture not ready (no confirm blob / panel)",
+            "reason": "capture not ready (no DO IT / Capture blob)",
             "city_id": city_id,
             "opened": opened,
+            "tried": tried,
             "unit": before.get("unit"),
             "ready": before.get("ready"),
+            "overlay": {
+                "do_it_pixel": (before.get("overlay") or {}).get("do_it_pixel"),
+                "do_it_blobs": (before.get("overlay") or {}).get("do_it_blobs"),
+                "capture_blobs": (before.get("overlay") or {}).get("capture_blobs"),
+            },
         }
     clicked = _click(target[0], target[1], space="screen")
-    _sleep()
+    _sleep(0.6)
     after = observe()
     return {
         "ok": True,
@@ -163,8 +186,121 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         "x": clicked["x"],
         "y": clicked["y"],
         "opened": opened,
+        "tried": tried,
         "hud": after.get("hud"),
         "unit": after.get("unit"),
+        "ready": after.get("ready"),
+        "turn_diff": after.get("turn_diff"),
+    }
+
+
+def _hp_snapshot(obs: dict[str, Any], ident: str | None, x: int | None, y: int) -> dict[str, Any]:
+    hit = lookup(obs, ident) if ident else None
+    if hit is None and x is not None:
+        best, best_d = None, 80
+        for u in obs.get("units") or []:
+            d = (int(u["x"]) - x) ** 2 + (int(u["y"]) - y) ** 2
+            if d < best_d * best_d:
+                best, best_d = u, int(d ** 0.5)
+        hit = best
+    if not hit:
+        return {}
+    return {
+        "id": hit.get("id"),
+        "hp": hit.get("hp"),
+        "n": hit.get("n"),
+        "x": hit.get("x"),
+        "y": hit.get("y"),
+    }
+
+
+def attack(
+    from_id: str | None = None,
+    to_id: str | None = None,
+    from_x: int | None = None,
+    from_y: int | None = None,
+    x: int | None = None,
+    y: int | None = None,
+    city_id: str | None = None,
+    space: str = "screen",
+) -> dict[str, Any]:
+    """Select attacker, click a red attack hex on the target, report HP change."""
+    dest = _resolve(to_id or city_id, space)
+    if dest:
+        x, y = int(dest["x"]), int(dest["y"])
+        space = "screen"
+    if x is None or y is None:
+        return {"ok": False, "name": "attack", "reason": "need to_id/city_id or x,y"}
+    selected = None
+    if from_id or from_x is not None:
+        selected = select_unit(x=from_x, y=from_y, id=from_id, space=space)
+        if not selected.get("ok"):
+            return {**selected, "name": "attack"}
+        _sleep(0.35)
+    before = remember() or observe()
+    marks = before.get("attack_marks") or (before.get("overlay") or {}).get("attack_marks") or []
+    panel = (before.get("unit") or {}).get("unit")
+    fx = fy = None
+    if from_id:
+        src = lookup(before, from_id)
+        if src:
+            fx, fy = int(src["x"]), int(src["y"])
+    elif from_x is not None:
+        fx, fy = int(from_x), int(from_y)
+    frame = tuple((before.get("layout") or {}).get("frame") or coords.frame())
+    verdict = combat.can_strike(
+        panel,
+        (fx, fy) if fx is not None else None,
+        (x, y),
+        (dest or {}).get("kind"),
+        (int(frame[0]), int(frame[1])),
+        marks,
+    )
+    hp_before = _hp_snapshot(before, to_id or city_id, x, y)
+    mark = verdict.get("red_mark")
+    if mark is None and marks:
+        mark = combat.nearest_mark(marks, x, y, max(combat.hex_pitch(*frame) * 2, 48))
+    if mark is None:
+        return {
+            "ok": False,
+            "name": "attack",
+            "reason": verdict.get("reason") or "no_attack_marks",
+            "hint": verdict.get("hint") or "no red hexes — raft/range/need select from_id",
+            "from_id": from_id,
+            "to_id": to_id or city_id,
+            "dest": dest,
+            "selected": selected,
+            "attack_marks": marks,
+            "can_strike": verdict,
+            "hp_before": hp_before,
+            "unit": before.get("unit"),
+        }
+    clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
+    _sleep(0.8)
+    after = observe()
+    hp_after = _hp_snapshot(after, to_id or city_id, x, y)
+    hp_dropped = False
+    if hp_before.get("hp") and hp_after.get("hp") and hp_before.get("hp") != hp_after.get("hp"):
+        hp_dropped = True
+    if isinstance(hp_before.get("n"), int) and isinstance(hp_after.get("n"), int):
+        if hp_after["n"] < hp_before["n"]:
+            hp_dropped = True
+    return {
+        "ok": True,
+        "name": "attack",
+        "from_id": from_id,
+        "to_id": to_id or city_id,
+        "x": clicked["x"],
+        "y": clicked["y"],
+        "red_marks": marks,
+        "clicked_mark": mark,
+        "can_strike": verdict,
+        "hp_before": hp_before,
+        "hp_after": hp_after,
+        "hp_dropped": hp_dropped,
+        "selected": selected,
+        "unit": after.get("unit"),
+        "hud": after.get("hud"),
         "ready": after.get("ready"),
         "turn_diff": after.get("turn_diff"),
     }

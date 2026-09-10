@@ -51,6 +51,7 @@ ROUTES = {
         "/calibrate",
         "/select-unit",
         "/move-to",
+        "/attack",
         "/capture",
         "/recruit",
         "/snapshot",
@@ -129,6 +130,7 @@ class Handler(BaseHTTPRequestHandler):
                         "local_hud",
                         "local_select_unit",
                         "local_move_to",
+                        "local_attack",
                         "local_capture",
                         "local_recruit",
                         "local_end_turn",
@@ -235,6 +237,18 @@ class Handler(BaseHTTPRequestHandler):
                     from_id=body.get("from_id") or body.get("unit_id"),
                     city_id=body.get("city_id"),
                     to_id=body.get("to_id"),
+                    space=space,
+                ))
+                return
+            if path == "/attack":
+                x, y = _xy(body, "x", "y")
+                fx, fy = _xy(body, "from_x", "from_y")
+                _json(self, 200, commands.attack(
+                    from_id=body.get("from_id") or body.get("unit_id"),
+                    to_id=body.get("to_id"),
+                    from_x=fx, from_y=fy,
+                    x=x, y=y,
+                    city_id=body.get("city_id"),
                     space=space,
                 ))
                 return

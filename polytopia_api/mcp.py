@@ -69,8 +69,25 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "local_attack",
+        "description": "Attack: select from_id, click a red hex on to_id/city_id. Returns red marks + hp_dropped. Rafts cannot hit land cities.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_id": {"type": "string"},
+                "to_id": {"type": "string"},
+                "city_id": {"type": "string"},
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+                "from_x": {"type": "integer"},
+                "from_y": {"type": "integer"},
+                "space": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "local_capture",
-        "description": "Press Capture. Pass city_id to stand-select that city first.",
+        "description": "Press Capture blob when a unit stands ON the city (city_id). Building first, not scaled DO IT.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -106,7 +123,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_click",
-        "description": "Click by name (TECH_TREE, SETTINGS, GAME_STATS) or x,y. Named Tech refuses if it sits on End Turn (T18→T22).",
+        "description": "Click by name (TECH_TREE) or x,y. Raw x,y in the dock zone is denied — never End Turn via computerUse.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -178,6 +195,7 @@ _GET = {
 _POST = {
     "local_select_unit": "/select-unit",
     "local_move_to": "/move-to",
+    "local_attack": "/attack",
     "local_capture": "/capture",
     "local_recruit": "/recruit",
     "local_end_turn": "/end-turn",

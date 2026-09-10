@@ -328,12 +328,19 @@ def click(
     repeats: int = 1,
     pause: float = 0.12,
     space: str = "screen",
+    allow_dock: bool = False,
 ) -> dict[str, Any]:
     """Click. ``space=design`` maps 1920×1200 playbook coords onto the live frame."""
     info = activate()
     sync_layout(info)
     if space == "design":
         x, y = coords.xy(x, y)
+    if not allow_dock and coords.in_dock_zone(int(x), int(y)):
+        raise PolytopiaError(
+            f"dock click denied at {[int(x), int(y)]} {coords.dock_zone()} — "
+            "use POST /end-turn or POST /click {name:TECH_TREE}. "
+            "computerUse must not hit End Turn."
+        )
     wid = str(info["window_id"])
     _run(["xdotool", "mousemove", "--window", wid, str(int(x)), str(int(y))])
     time.sleep(pause)
@@ -364,7 +371,7 @@ def back() -> dict[str, Any]:
 
 def end_turn() -> dict[str, Any]:
     """Firm double click on End Turn (single clicks often miss)."""
-    return click(*coords.END_TURN, repeats=2, pause=0.1)
+    return click(*coords.END_TURN, repeats=2, pause=0.1, allow_dock=True)
 
 
 def click_named(name: str, repeats: int = 1) -> dict[str, Any]:
@@ -390,7 +397,7 @@ def click_named(name: str, repeats: int = 1) -> dict[str, Any]:
             f"{key} {list(pt)} is too close to END_TURN {list(end)} "
             f"(<{coords.DOCK_MIN_SEP}px) — calibrate TECH_TREE instead of clicking"
         )
-    result = click(pt[0], pt[1], space="screen", repeats=repeats)
+    result = click(pt[0], pt[1], space="screen", repeats=repeats, allow_dock=True)
     result["name"] = key
     result["source"] = coords.source_of(key)
     return result
@@ -541,10 +548,14 @@ def read_hud(im: Image.Image) -> dict[str, Any]:
         txt = _ocr_fix_digits(txt)
         digits[key] = txt
         nums = [int(n.replace(",", "")) for n in re.findall(r"\d{1,3}(?:,\d{3})+|\d+", txt)]
-        if key == "score" and parsed.get("score") is None:
-            parsed["score"] = _first_plausible(nums, 80, 80000) or _first_plausible(nums, 0, 80000)
-        elif key == "stars" and parsed.get("stars") is None:
-            parsed["stars"] = _first_plausible(nums, 0, 80)
+        if key == "score":
+            crop_val = _first_plausible(nums, 80, 80000) or _first_plausible(nums, 0, 80000)
+            if crop_val is not None:
+                parsed["score"] = crop_val
+        elif key == "stars":
+            crop_val = _first_plausible(nums, 0, 80)
+            if crop_val is not None:
+                parsed["stars"] = crop_val
         elif key == "turn" and parsed.get("turn") is None:
             parsed["turn"] = _first_plausible(nums, 0, 200)
 
@@ -669,9 +680,23 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
     )
     capture = ("capture" in low or "conquer" in low) and not capture_soon
     unit = None
-    for name in ("catapult", "archer", "warrior", "rider", "defender", "knight", "giant", "bomber"):
+    for name in (
+        "catapult",
+        "archer",
+        "warrior",
+        "rider",
+        "defender",
+        "knight",
+        "giant",
+        "bomber",
+        "raft",
+        "scout",
+        "rammer",
+        "mind bender",
+        "boat",
+    ):
         if name in low:
-            unit = name
+            unit = name.replace(" ", "_")
             break
     return {
         "raw": text,
