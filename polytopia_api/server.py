@@ -151,6 +151,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "game": info,
                     "layout": coords.layout_info(),
+                    "snapshots": str(snapshot.snapshot_dir()),
+                    "turn_floor": snapshot.trusted_floor(),
                     "mcp": "python3 -m polytopia_api.mcp",
                 })
                 return

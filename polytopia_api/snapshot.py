@@ -27,9 +27,34 @@ def reset() -> None:
 
 
 def snapshot_dir() -> Path:
-    d = Path(os.environ.get("POLYTOPIA_SNAPSHOTS", "turn_snapshot"))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """Stable snapshot folder — not silently cwd-relative.
+
+    1. ``POLYTOPIA_SNAPSHOTS`` (absolute or ~)
+    2. Existing dir that already has ``T*.json`` (cwd, package repo, XDG)
+    3. Package repo ``<repo>/turn_snapshot`` (default create)
+    """
+    env = os.environ.get("POLYTOPIA_SNAPSHOTS", "").strip()
+    if env:
+        d = Path(env).expanduser()
+        if not d.is_absolute():
+            d = (Path.cwd() / d).resolve()
+        else:
+            d = d.resolve()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    repo = Path(__file__).resolve().parent.parent / "turn_snapshot"
+    xdg = Path.home() / ".config" / "polytopia-local-api" / "turn_snapshot"
+    cwd = Path.cwd() / "turn_snapshot"
+    candidates = [cwd, repo, xdg]
+    for c in candidates:
+        if c.is_dir() and any(c.glob("T*.json")):
+            return c.resolve()
+    for c in candidates:
+        if c.is_dir():
+            return c.resolve()
+    repo.mkdir(parents=True, exist_ok=True)
+    return repo.resolve()
 
 
 def slim(obs: dict[str, Any]) -> dict[str, Any]:

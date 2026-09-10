@@ -48,7 +48,7 @@ python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 
 Na End Turn (albo `POST /snapshot`):
 
-- JSON + PNG w `turn_snapshot/` (`POLYTOPIA_SNAPSHOTS=`).
+- JSON + PNG: `POLYTOPIA_SNAPSHOTS=` (absolute), inaczej katalog z `T*.json` (cwd / repo / `~/.config/polytopia-local-api/turn_snapshot`), domyślnie **repo** `turn_snapshot/` — nie cichy CWD. `GET /health` → `snapshots` + `turn_floor`.
 - Numer tury: ręczny `turn=N`, świeże OCR (`turn_trusted`), albo zegar po End Turn. Nigdy cache/stale.
 - Diff: turn/stars, lista unitów (pozycje), miasta own/enemy, fog edge.
 - Alert `turn_jump` gdy **zaufana** tura skacze o **>1**.

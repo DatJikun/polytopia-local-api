@@ -549,6 +549,26 @@ def test_observe_hud_floor_from_tfile_without_latest():
     os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
 
 
+def test_snapshot_dir_ignores_empty_cwd():
+    import tempfile
+
+    from polytopia_api import snapshot as snapmod
+
+    os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
+    snapmod.reset()
+    here = Path.cwd()
+    other = tempfile.mkdtemp()
+    try:
+        os.chdir(other)
+        d = snapmod.snapshot_dir()
+        assert d.is_absolute()
+        assert d != Path(other) / "turn_snapshot"
+        assert d.name == "turn_snapshot"
+    finally:
+        os.chdir(here)
+    os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
+
+
 def test_find_train_blob_1280():
     im = Image.new("RGB", (1280, 800), (20, 20, 20))
     d = ImageDraw.Draw(im)
@@ -577,5 +597,6 @@ if __name__ == "__main__":
     test_snapshot_refuses_stale_turn()
     test_observe_hud_untrusts_ocr_behind_floor()
     test_observe_hud_floor_from_tfile_without_latest()
+    test_snapshot_dir_ignores_empty_cwd()
     test_find_train_blob_1280()
     print("ok")
