@@ -20,6 +20,8 @@ def test_parse_hud():
     }
     p = parse_hud("Score Stars (+7) Turn\n1,800 *0 9")
     assert p["stars"] == 0 and p["turn"] == 9 and p["score"] == 1800
+    p = parse_hud("1,8O0 *7 l7")
+    assert p["score"] == 1800 and p["stars"] == 7 and p["turn"] == 17
 
 
 def test_parse_unit():
@@ -80,8 +82,14 @@ def test_empirical_end_turn_1280():
     assert info["frame"] == [1280, 800]
     assert info["empirical"] is True
     assert info["source"]["END_TURN"] == "empirical"
+    dock = coords.dock_from_end((765, 746))
+    assert tuple(coords.SETTINGS) == dock["SETTINGS"]
+    assert tuple(coords.TECH_TREE) == dock["TECH_TREE"]
+    assert abs(coords.SETTINGS[1] - 746) <= 8
+    # Not naive origin-scale (that misses the 1280 dock).
+    assert tuple(coords.SETTINGS) != coords.xy(880, 1124)
     hud = tuple(coords.HUD_CROP)
-    assert hud[1] == 0 and hud[3] <= 80
+    assert hud[1] == 0 and hud[3] <= 110
     coords.set_empirical("DO_IT", 740, 450)
     assert tuple(coords.DO_IT) == (740, 450)
     assert coords.source_of("DO_IT") == "empirical"
@@ -128,6 +136,19 @@ def test_entities_on_synthetic_map():
     assert villages, villages
     assert classify_tribe((210, 180, 60)) == "oumaji"
     assert classify_tribe((90, 85, 80)) == "bardur"
+    assert classify_tribe((30, 40, 28)) == "unknown"  # grass ≠ Bardur city
+    assert classify_tribe((58, 199, 249)) == "unknown"  # water ≠ Imperius
+    assert classify_tribe((143, 255, 255)) == "unknown"
+
+    # Water foam + cyan is not a city; a dirt field is not a village.
+    noisy = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    nd = ImageDraw.Draw(noisy)
+    nd.rectangle((400, 200, 900, 500), fill=(58, 199, 249))
+    nd.rectangle((520, 310, 610, 322), fill=(240, 245, 250))
+    nd.rectangle((700, 700, 980, 980), fill=(160, 120, 70))
+    narr = __import__("numpy").asarray(noisy).astype("int16")
+    assert not find_cities(narr), find_cities(narr)
+    assert not find_villages(narr, []), find_villages(narr, [])
 
 
 def test_capture_and_recruit_targets():
@@ -162,6 +183,30 @@ def test_mcp_lists_local_tools():
         assert n in names, n
     listed = handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert listed["result"]["tools"][0]["name"].startswith("local_")
+
+
+def test_find_window_ignores_wrapper_and_chrome():
+    from polytopia_api.driver import is_game_bin, is_game_window, pick_game_process
+    from polytopia_api.server import canonicalize_path
+
+    lines = [
+        "1111 /home/foo/.steam/steam.sh -applaunch 874390 Polytopia.x86_64",
+        "2222 /home/foo/.steam/steamapps/common/The Battle of Polytopia/Polytopia.x86_64",
+        "3333 /opt/google/chrome/chrome --app=http://polytopia.local",
+        "4444 grep Polytopia.x86_64",
+    ]
+    hit = pick_game_process(lines)
+    assert hit is not None and hit[0] == 2222
+    assert is_game_bin(hit[1])
+    assert not is_game_bin(lines[0].split(None, 1)[1])
+    assert is_game_window("Polytopia", 'WM_CLASS(STRING) = "Polytopia", "Polytopia"')
+    assert not is_game_window(
+        "polytopia.local",
+        'WM_CLASS(STRING) = "Google-chrome", "Google-chrome"',
+    )
+    assert canonicalize_path("/select_unit") == "/select-unit"
+    assert canonicalize_path("/end_turn/") == "/end-turn"
+    assert canonicalize_path("/move-to") == "/move-to"
 
 
 def test_plan_priorities():
@@ -278,5 +323,6 @@ if __name__ == "__main__":
     test_entities_on_synthetic_map()
     test_capture_and_recruit_targets()
     test_mcp_lists_local_tools()
+    test_find_window_ignores_wrapper_and_chrome()
     test_plan_priorities()
     print("ok")

@@ -22,14 +22,24 @@ def _own_tribe() -> str:
 
 def classify_tribe(rgb: list[int] | tuple[int, int, int]) -> str:
     r, g, b = (int(x) for x in rgb[:3])
+    # Water/ice/sky must not become "Imperius".
+    if is_water_rgb(r, g, b):
+        return "unknown"
     # Oumaji sand / yellow tents
-    if r >= 170 and g >= 130 and b <= 130 and (r + g) >= (2 * b + 70):
+    if r >= 170 and g >= 130 and b <= 110 and (r + g) >= (2 * b + 80):
         return "oumaji"
-    # Imperius / Kickoo blues
-    if b >= r + 25 and b >= g + 10 and b >= 90:
+    # Imperius royal blue — G well below B, not cyan
+    if b >= 110 and b >= r + 40 and g <= min(b - 35, 125) and r <= 95:
         return "imperius"
-    # Bardur dark wood / grey
-    if max(r, g, b) <= 150 and abs(r - g) <= 30 and abs(g - b) <= 35:
+    # Bardur dark wood — not forest green, not near-black water shade
+    if (
+        55 <= max(r, g, b) <= 145
+        and min(r, g, b) >= 50
+        and abs(r - g) <= 25
+        and abs(g - b) <= 30
+        and abs(r - b) <= 30
+        and g <= r + 15
+    ):
         return "bardur"
     return "unknown"
 
@@ -39,6 +49,15 @@ def _owner_of(tribe: str) -> str:
     if tribe == "unknown":
         return "unknown"
     return "own" if tribe == own else "enemy"
+
+
+def _bbox(xs: np.ndarray, ys: np.ndarray, cx: int, cy: int, radius: int) -> tuple[int, int]:
+    if xs.size == 0:
+        return 0, 0
+    near = (xs - cx) ** 2 + (ys - cy) ** 2 <= radius * radius
+    if not np.any(near):
+        return 0, 0
+    return int(xs[near].max() - xs[near].min()) + 1, int(ys[near].max() - ys[near].min()) + 1
 
 
 def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
@@ -84,23 +103,40 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
-    """White-ish nameplates; tribe color sampled above the plate."""
+    """White nameplates with a tribe-colored building above. Drops water/UI foam."""
     y0, y1, x0, x1 = _map_bounds(arr)
     region = arr[y0:y1, x0:x1]
     r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
     white = (r >= 215) & (g >= 215) & (b >= 200) & ((np.maximum(r, g) - np.minimum(np.minimum(r, g), b)) <= 45)
     ys, xs = np.where(white)
-    rad, mn = _cluster_params(arr, 22, 28)
-    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(28, rad * 2))
+    if xs.size == 0:
+        return []
+    axs, ays = xs + x0, ys + y0
+    rad, mn = _cluster_params(arr, 22, 40)
+    clusters = merge_clusters(_cluster(ays, axs, radius=rad, min_size=mn), dist=max(32, rad * 2))
     h, w = arr.shape[:2]
-    up = max(12, int(round(28 * h / coords.BASE_H)))
+    s = min(w / coords.BASE_W, h / coords.BASE_H)
+    up = max(12, int(round(28 * s)))
+    min_w, max_w = int(24 * s), int(140 * s)
+    min_h, max_h = max(4, int(5 * s)), int(24 * s)
     cities: list[dict[str, Any]] = []
     for n, cx, cy in clusters:
-        # Nameplates are wider than tall.
-        if n > 2200:
+        if n > 2500:
+            continue
+        bw, bh = _bbox(axs, ays, cx, cy, max(24, rad * 2))
+        if bh <= 0 or bw < min_w or bw > max_w or bh < min_h or bh > max_h:
+            continue
+        if bw / bh < 1.7:
             continue
         rgb = sample(arr, cx, max(0, cy - up))
         tribe = classify_tribe(rgb)
+        if tribe == "unknown":
+            continue
+        conf = 0.72 if tribe == _own_tribe() else 0.62
+        if tribe == "imperius":
+            conf = 0.55
+        if conf < 0.55:
+            continue
         cities.append(
             {
                 "id": f"c{len(cities)}",
@@ -109,42 +145,58 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "y": max(0, cy - up // 2),
                 "plate_y": cy,
                 "n": n,
+                "w": bw,
+                "h": bh,
                 "tribe": tribe,
                 "owner": _owner_of(tribe),
+                "confidence": conf,
                 "rgb": rgb,
             }
         )
-    return cities[:12]
+    cities.sort(key=lambda c: (-float(c["confidence"]), -int(c["n"])))
+    return cities[:6]
 
 
 def find_villages(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Small tan/brown hut clusters, away from city plates."""
+    """Compact tan huts only. Dirt / mountains / city plates are dropped."""
     y0, y1, x0, x1 = _map_bounds(arr)
     region = arr[y0:y1, x0:x1]
     r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
     tan = (
-        (r >= 130)
-        & (r <= 210)
-        & (g >= 85)
-        & (g <= 170)
-        & (b >= 35)
-        & (b <= 110)
-        & (r >= g + 8)
-        & (g >= b + 8)
+        (r >= 140)
+        & (r <= 200)
+        & (g >= 90)
+        & (g <= 155)
+        & (b >= 40)
+        & (b <= 95)
+        & (r >= g + 15)
+        & (g >= b + 12)
     )
     ys, xs = np.where(tan)
-    rad, mn = _cluster_params(arr, 16, 12)
-    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(20, rad * 2))
-    city_pts = [(c["x"], c["plate_y"] if "plate_y" in c else c["y"]) for c in (cities or [])]
-    max_n = max(80, int(round(400 * (arr.shape[0] * arr.shape[1]) / (coords.BASE_W * coords.BASE_H))))
+    if xs.size == 0:
+        return []
+    axs, ays = xs + x0, ys + y0
+    rad, mn = _cluster_params(arr, 14, 28)
+    clusters = merge_clusters(_cluster(ays, axs, radius=rad, min_size=mn), dist=max(18, rad * 2))
+    city_pts = [(c["x"], c.get("plate_y", c["y"])) for c in (cities or [])]
+    h, w = arr.shape[:2]
+    s = min(w / coords.BASE_W, h / coords.BASE_H)
+    area = (w * h) / (coords.BASE_W * coords.BASE_H)
+    min_n = max(20, int(round(28 * area)))
+    max_n = max(120, int(round(420 * area)))
     villages: list[dict[str, Any]] = []
     for n, cx, cy in clusters:
-        if n > max_n:
+        if n < min_n or n > max_n:
+            continue
+        bw, bh = _bbox(axs, ays, cx, cy, max(16, rad * 2))
+        if min(bw, bh) < max(6, int(8 * s)) or max(bw, bh) > int(40 * s):
+            continue
+        if bh <= 0 or not (0.5 <= bw / bh <= 2.0):
             continue
         rgb = sample(arr, cx, cy)
         if is_water_rgb(*rgb):
             continue
-        if any((cx - x) ** 2 + (cy - y) ** 2 < 40 ** 2 for x, y in city_pts):
+        if any((cx - x) ** 2 + (cy - y) ** 2 < 48 ** 2 for x, y in city_pts):
             continue
         villages.append(
             {
@@ -153,10 +205,14 @@ def find_villages(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -
                 "x": cx,
                 "y": cy,
                 "n": n,
+                "w": bw,
+                "h": bh,
+                "confidence": 0.68,
                 "rgb": rgb,
             }
         )
-    return villages[:10]
+    villages.sort(key=lambda v: -float(v["confidence"]))
+    return villages[:4]
 
 
 def observe_map(arr: np.ndarray) -> dict[str, Any]:

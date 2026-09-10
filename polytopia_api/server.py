@@ -46,6 +46,9 @@ ROUTES = {
         "/key",
         "/calibrate",
         "/select-unit",
+        "/select_unit",
+        "/move-to",
+        "/end-turn",
         "/move-to",
         "/capture",
         "/recruit",
@@ -89,6 +92,14 @@ def _xy(body: dict, *keys: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+def canonicalize_path(path: str) -> str:
+    """`/select_unit` and `/select-unit` are the same route."""
+    path = (path or "/").rstrip("/") or "/"
+    if path != "/":
+        path = path.replace("_", "-")
+    return path
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -104,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
+        path = canonicalize_path(parsed.path)
         q = parse_qs(parsed.query)
         try:
             if path == "/":
@@ -172,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
+        path = canonicalize_path(parsed.path)
         try:
             body = _read_json(self)
             space = str(body.get("space") or "screen")

@@ -95,7 +95,7 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         "hits_space": "screen",
         "window": {
             k: info.get(k)
-            for k in ("found", "pid", "window_id", "width", "height")
+            for k in ("found", "pid", "window_id", "width", "height", "match", "name")
         },
         "layout": coords.layout_info(),
         "screenshot": str(path),

@@ -39,10 +39,27 @@ _BOX: dict[str, tuple[int, int, int, int]] = {
 }
 
 # Screen pixels, keyed by live frame. Never derived from 2/3 scale.
+_DESIGN_END = _P["END_TURN"]
+_DOCK = ("SETTINGS", "GAME_STATS", "TECH_TREE", "END_TURN")
+
+
+def dock_from_end(end: tuple[int, int]) -> dict[str, tuple[int, int]]:
+    """Pin Settings / Tech / Stats to a measured End Turn instead of origin-scale."""
+    ex, ey = int(end[0]), int(end[1])
+    dx = ex / _DESIGN_END[0]
+    dy = ey / _DESIGN_END[1]
+    out: dict[str, tuple[int, int]] = {"END_TURN": (ex, ey)}
+    for name in ("SETTINGS", "GAME_STATS", "TECH_TREE"):
+        ox, oy = _P[name]
+        out[name] = (
+            int(round(ex + (ox - _DESIGN_END[0]) * dx)),
+            int(round(ey + (oy - _DESIGN_END[1]) * dy)),
+        )
+    return out
+
+
 _BUILTIN_EMPIRICAL: dict[tuple[int, int], dict[str, tuple[int, int]]] = {
-    (1280, 800): {
-        "END_TURN": (765, 746),
-    },
+    (1280, 800): dock_from_end((765, 746)),
 }
 
 _frame_w, _frame_h = BASE_W, BASE_H
@@ -178,13 +195,22 @@ def _slot() -> dict[str, tuple[int, int]]:
 
 
 def source_of(name: str) -> str:
-    return "empirical" if name in _slot() else "scaled"
+    slot = _slot()
+    if name in slot:
+        return "empirical"
+    if name in _DOCK and "END_TURN" in slot:
+        return "dock"
+    return "scaled"
 
 
 def point(name: str) -> tuple[int, int]:
     emp = _slot().get(name)
     if emp is not None:
         return int(emp[0]), int(emp[1])
+    if name in _DOCK and name != "END_TURN":
+        end = _slot().get("END_TURN")
+        if end is not None:
+            return dock_from_end(end)[name]
     if name not in _P:
         raise KeyError(name)
     return xy(*_P[name])
@@ -203,8 +229,8 @@ def crop_box(name: str) -> tuple[int, int, int, int]:
     """HUD / unit panel. Fractions of the live frame, not 2/3 of 1920."""
     w, h = _frame_w, _frame_h
     if name == "HUD_CROP":
-        # Top-center strip; generous so digit OCR still sees ★ / turn.
-        return int(w * 0.28), 0, int(w * 0.72), max(36, int(h * 0.09))
+        # Wider/taller than 1920 design crop — tiny HUD digits at 1280 need room.
+        return int(w * 0.18), 0, int(w * 0.82), max(40, int(h * 0.12))
     if name == "UNIT_CROP":
         return 0, int(h * 0.80), int(w * 0.48), h
     return box(*_BOX[name])

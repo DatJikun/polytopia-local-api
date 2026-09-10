@@ -11,8 +11,11 @@ Koordy playbooka są z 1920×1200. Naiwne `× 2/3` na **1280×800 psuje End Turn
 | przycisk | 1920×1200 (design) | 1280×800 |
 |---|---|---|
 | End Turn | 1111, 1130 | **765, 746** (empiria) |
+| Settings / Tech / Stats | rząd docku | **przybite do End Turn** (nie `×2/3` od (0,0)) |
 
-`GET /health` → `layout.source.END_TURN: "empirical"` i `layout.screen.END_TURN: [765, 746]`. Reszta bez pomiaru leci ze skali (oznaczone `"scaled"`).
+`GET /health` → `layout.source.END_TURN: "empirical"` i `layout.screen.END_TURN: [765, 746]`. `find_window` bierze tylko proces, którego **argv0 kończy się na `Polytopia.x86_64`**, plus okno o nazwie/klasie dokładnie `Polytopia` — nie wrapper Steama i nie Chrome `polytopia.local`.
+
+Ścieżki: `/select_unit` = `/select-unit` (to samo dla `end_turn` / `move_to`).
 
 ```bash
 # dopisz kolejny punkt, gdy coś mija
