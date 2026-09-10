@@ -510,6 +510,45 @@ def test_observe_hud_untrusts_ocr_behind_floor():
     os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
 
 
+def test_observe_hud_floor_from_tfile_without_latest():
+    import tempfile
+
+    from polytopia_api import snapshot as snapmod
+
+    d = tempfile.mkdtemp()
+    os.environ["POLYTOPIA_SNAPSHOTS"] = d
+    snapmod.reset()
+    (Path(d) / "T26.json").write_text('{"turn":26,"turn_trusted":true}\n', encoding="utf-8")
+    behind = {
+        "turn": 2,
+        "turn_ocr": 2,
+        "stale": False,
+        "stale_fields": [],
+        "turn_trusted": True,
+        "missing": [],
+    }
+    snapmod.apply_turn_floor(behind)
+    assert behind["turn_floor"] == 26
+    assert behind["turn_trusted"] is False
+    assert behind["turn"] is None
+    snapmod.reset()
+    empty = tempfile.mkdtemp()
+    os.environ["POLYTOPIA_SNAPSHOTS"] = empty
+    os.environ["POLYTOPIA_TURN"] = "26"
+    env_behind = {
+        "turn": 2,
+        "turn_ocr": 2,
+        "stale": False,
+        "stale_fields": [],
+        "turn_trusted": True,
+        "missing": [],
+    }
+    snapmod.apply_turn_floor(env_behind)
+    assert env_behind["turn_floor"] == 26 and env_behind["turn_trusted"] is False
+    os.environ.pop("POLYTOPIA_TURN", None)
+    os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
+
+
 def test_find_train_blob_1280():
     im = Image.new("RGB", (1280, 800), (20, 20, 20))
     d = ImageDraw.Draw(im)
@@ -537,5 +576,6 @@ if __name__ == "__main__":
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
     test_observe_hud_untrusts_ocr_behind_floor()
+    test_observe_hud_floor_from_tfile_without_latest()
     test_find_train_blob_1280()
     print("ok")

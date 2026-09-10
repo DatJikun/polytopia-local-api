@@ -574,7 +574,12 @@ def read_hud(im: Image.Image) -> dict[str, Any]:
     from . import snapshot as _snap
 
     _snap.apply_turn_floor(parsed)
-    parsed["turn_trusted"] = parsed.get("turn") is not None and "turn" not in (parsed.get("stale_fields") or [])
+    if parsed.get("turn_untrusted_reason"):
+        parsed["turn_trusted"] = False
+    else:
+        parsed["turn_trusted"] = parsed.get("turn") is not None and "turn" not in (
+            parsed.get("stale_fields") or []
+        )
     floor = parsed.get("turn_floor")
     if parsed.get("turn_trusted"):
         cache_turn = parsed.get("turn")

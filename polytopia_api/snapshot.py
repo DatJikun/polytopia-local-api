@@ -104,9 +104,37 @@ def last_trusted_turn(obs: dict[str, Any] | None = None) -> int | None:
     return None
 
 
+def filename_turn_floor(folder: Path | None = None) -> int | None:
+    """Highest T{n}.json in the snapshot dir — survives missing latest.json."""
+    d = folder or snapshot_dir()
+    if not d.is_dir():
+        return None
+    best: int | None = None
+    for p in d.glob("T*.json"):
+        stem = p.stem
+        if len(stem) < 2 or stem[0] not in {"T", "t"} or not stem[1:].isdigit():
+            continue
+        n = int(stem[1:])
+        best = n if best is None else max(best, n)
+    return best
+
+
+def env_turn_floor() -> int | None:
+    raw = os.environ.get("POLYTOPIA_TURN", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return None
+
+
+def trusted_floor() -> int | None:
+    cands = [last_trusted_turn(), filename_turn_floor(), env_turn_floor()]
+    nums = [n for n in cands if isinstance(n, int)]
+    return max(nums) if nums else None
+
+
 def apply_turn_floor(hud: dict[str, Any]) -> dict[str, Any]:
     """Observe/HUD: OCR behind last labeled/clocked turn is not trusted (T26 vs OCR 2)."""
-    floor = last_trusted_turn()
+    floor = trusted_floor()
     hud["turn_floor"] = floor
     ocr = hud.get("turn_ocr")
     if not isinstance(ocr, int):
@@ -140,7 +168,7 @@ def resolve_turn(
         ocr = None
     if label is not None:
         return {"turn": int(label), "source": "label", "trusted": True, "ocr": ocr}
-    prev = last_trusted_turn()
+    prev = trusted_floor()
     if reason == "end_turn" and isinstance(prev, int):
         return {"turn": prev + 1, "source": "clock", "trusted": True, "ocr": ocr}
     if hud_turn_trusted(hud) and isinstance(hud.get("turn"), int):
