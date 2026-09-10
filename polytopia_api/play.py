@@ -34,10 +34,12 @@ def plan(obs: dict[str, Any]) -> dict[str, Any]:
         return {"name": "back", "reason": "settings/tech overlay"}
     if unit.get("clear_forest"):
         return {"name": "back", "reason": "refuse Clear Forest"}
-    if unit.get("capture") and (confirm_ready or overlay.get("do_it_pixel") or overlay.get("do_it_blobs")):
-        blobs = overlay.get("capture_blobs") or overlay.get("do_it_blobs") or []
-        x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.DO_IT)
-        return {"name": "capture", "x": x, "y": y}
+    if unit.get("capture"):
+        hit = commands.capture_target(obs)
+        if hit:
+            return {"name": "capture", "x": hit[0], "y": hit[1]}
+        if overlay.get("do_it_pixel"):
+            return {"name": "capture", "x": coords.DO_IT[0], "y": coords.DO_IT[1]}
     if confirm_ready and (unit.get("harvest") or overlay.get("do_it_pixel") or overlay.get("do_it_blobs")):
         blobs = overlay.get("do_it_blobs") or []
         x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.DO_IT)

@@ -124,11 +124,23 @@ def move_to(
 
 
 def capture_target(obs: dict[str, Any]) -> tuple[int, int] | None:
-    """Live Capture / DO IT blob only. Never scaled 1920 coords."""
+    """Live Capture blob only, and only when the panel says Capture.
+
+    Dozens of blue map/UI blobs are not Capture — never click the largest one
+    unless the unit is ON a city (OCR Capture / ready.capture).
+    """
+    unit = obs.get("unit") or {}
+    ready = obs.get("ready") or {}
+    if not unit.get("capture") and not ready.get("capture"):
+        return None
     overlay = obs.get("overlay") or {}
     blobs = overlay.get("capture_blobs") or overlay.get("do_it_blobs") or []
     if blobs:
-        best = max(blobs, key=lambda b: int(b.get("n") or 0))
+        ex, ey = coords.DO_IT
+        best = min(
+            blobs,
+            key=lambda b: (int(b["x"]) - ex) ** 2 + (int(b["y"]) - ey) ** 2,
+        )
         return int(best["x"]), int(best["y"])
     if overlay.get("do_it_pixel") or overlay.get("capture_pixel"):
         return tuple(coords.DO_IT)
@@ -142,7 +154,14 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
     if city_id and not hit:
         return {"ok": False, "name": "capture", "reason": f"no entity {city_id}", "city_id": city_id}
     tried: list[dict[str, Any]] = []
-    last_obs = remember()
+    last_obs = remember() or observe()
+    frame = tuple((last_obs.get("layout") or {}).get("frame") or coords.frame())
+    on = combat.unit_on_city(
+        last_obs.get("units") or [],
+        hit,
+        (int(frame[0]), int(frame[1])),
+        last_obs.get("unit") or {},
+    )
     if hit:
         x = int(hit["x"])
         building = int(hit["y"])
@@ -154,11 +173,40 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
             opened = {**_click(cx, cy, space="screen"), "where": where}
             _sleep(0.7)
             last_obs = observe()
+            on = combat.unit_on_city(
+                last_obs.get("units") or [],
+                hit,
+                (int(frame[0]), int(frame[1])),
+                last_obs.get("unit") or {},
+            )
             target = capture_target(last_obs)
-            tried.append({"where": where, "x": cx, "y": cy, "capture": target is not None})
+            tried.append({"where": where, "x": cx, "y": cy, "capture": target is not None, "on_city": on})
             if target is not None or (last_obs.get("unit") or {}).get("capture"):
                 break
     before = last_obs or remember() or observe()
+    on = combat.unit_on_city(
+        before.get("units") or [],
+        hit,
+        (int(frame[0]), int(frame[1])),
+        before.get("unit") or {},
+    )
+    if not on.get("ok") and not (before.get("unit") or {}).get("capture"):
+        return {
+            "ok": False,
+            "name": "capture",
+            "reason": "unit not ON city",
+            "hint": "move onto the tile first; Capture blob is ignored until the panel says Capture",
+            "city_id": city_id,
+            "on_city": on,
+            "opened": opened,
+            "tried": tried,
+            "unit": before.get("unit"),
+            "overlay": {
+                "do_it_pixel": (before.get("overlay") or {}).get("do_it_pixel"),
+                "do_it_blobs": (before.get("overlay") or {}).get("do_it_blobs"),
+                "capture_blobs": (before.get("overlay") or {}).get("capture_blobs"),
+            },
+        }
     target = capture_target(before)
     if target is None:
         return {
@@ -185,9 +233,10 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         "city_id": city_id,
         "x": clicked["x"],
         "y": clicked["y"],
-        "opened": opened,
-        "tried": tried,
-        "hud": after.get("hud"),
+            "opened": opened,
+            "tried": tried,
+            "on_city": on,
+            "hud": after.get("hud"),
         "unit": after.get("unit"),
         "ready": after.get("ready"),
         "turn_diff": after.get("turn_diff"),
@@ -195,20 +244,27 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
 
 
 def _hp_snapshot(obs: dict[str, Any], ident: str | None, x: int | None, y: int) -> dict[str, Any]:
+    """Garrison HP lives on the unit, not the city nameplate ``n``."""
     hit = lookup(obs, ident) if ident else None
-    if hit is None and x is not None:
-        best, best_d = None, 80
-        for u in obs.get("units") or []:
-            d = (int(u["x"]) - x) ** 2 + (int(u["y"]) - y) ** 2
-            if d < best_d * best_d:
-                best, best_d = u, int(d ** 0.5)
-        hit = best
+    tx, ty = x, y
+    if hit is not None:
+        tx = int(hit.get("x") if hit.get("x") is not None else (x or 0))
+        ty = int(hit.get("y") if hit.get("y") is not None else (y or 0))
+    if hit is None or hit.get("kind") == "city" or hit.get("hp") is None:
+        frame = tuple((obs.get("layout") or {}).get("frame") or coords.frame())
+        pitch = combat.hex_pitch(int(frame[0]), int(frame[1]))
+        garrison = combat.nearest_unit(obs.get("units") or [], int(tx or 0), int(ty or 0), max(48, int(pitch * 1.15)))
+        if garrison is not None:
+            hit = garrison
+        elif hit is not None and (hit.get("kind") == "city" or hit.get("hp") is None):
+            return {}
     if not hit:
         return {}
     return {
         "id": hit.get("id"),
+        "kind": hit.get("kind"),
         "hp": hit.get("hp"),
-        "n": hit.get("n"),
+        "n": hit.get("n") if hit.get("kind") != "city" else None,
         "x": hit.get("x"),
         "y": hit.get("y"),
     }
@@ -280,11 +336,17 @@ def attack(
     after = observe()
     hp_after = _hp_snapshot(after, to_id or city_id, x, y)
     hp_dropped = False
+    if hp_before.get("id") and not hp_after.get("id"):
+        hp_dropped = True
     if hp_before.get("hp") and hp_after.get("hp") and hp_before.get("hp") != hp_after.get("hp"):
         hp_dropped = True
-    if isinstance(hp_before.get("n"), int) and isinstance(hp_after.get("n"), int):
-        if hp_after["n"] < hp_before["n"]:
-            hp_dropped = True
+    if (
+        hp_before.get("kind") != "city"
+        and isinstance(hp_before.get("n"), int)
+        and isinstance(hp_after.get("n"), int)
+        and hp_after["n"] < hp_before["n"]
+    ):
+        hp_dropped = True
     return {
         "ok": True,
         "name": "attack",

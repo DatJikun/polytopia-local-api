@@ -53,6 +53,34 @@ def unit_profile(unit_type: str | None) -> dict[str, Any]:
     }
 
 
+def nearest_unit(
+    units: list[dict[str, Any]],
+    x: int,
+    y: int,
+    max_dist: int,
+) -> dict[str, Any] | None:
+    return nearest_mark(units, x, y, max_dist)
+
+
+def unit_on_city(
+    units: list[dict[str, Any]],
+    city: dict[str, Any] | None,
+    frame: tuple[int, int],
+    panel: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """True when a unit stands ON the city tile (Capture), not merely adjacent."""
+    panel = panel or {}
+    if panel.get("capture") and not panel.get("capture_soon"):
+        return {"ok": True, "reason": "panel_capture", "unit": None}
+    if not city:
+        return {"ok": False, "reason": "no_city"}
+    pitch = hex_pitch(*frame)
+    hit = nearest_unit(units or [], int(city["x"]), int(city.get("y") or city.get("plate_y") or 0), max(18, int(pitch * 0.75)))
+    if hit is None:
+        return {"ok": False, "reason": "unit_not_on_city", "hex_pitch": pitch}
+    return {"ok": True, "reason": "unit_on_tile", "unit": hit, "hex_pitch": pitch}
+
+
 def nearest_mark(
     marks: list[dict[str, Any]],
     x: int,

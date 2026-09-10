@@ -98,15 +98,8 @@ def stabilize(
 
 
 def ready_flags(unit: dict[str, Any], overlay: dict[str, Any], confirm_ready: bool) -> dict[str, Any]:
-    capture = bool(
-        unit.get("capture")
-        or (
-            unit.get("village")
-            and not unit.get("capture_soon")
-            and (overlay.get("do_it_pixel") or overlay.get("do_it_blobs"))
-        )
-    )
-    train = bool(unit.get("train") or overlay.get("train_pixel") or overlay.get("train_blobs"))
+    capture = bool(unit.get("capture"))
+    train = bool(unit.get("train") or overlay.get("train_pixel"))
     harvest = bool(unit.get("harvest") or (confirm_ready and overlay.get("do_it_pixel")))
     return {
         "capture": capture,
@@ -143,10 +136,11 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
     confirm_ready = bool(
         overlay["do_it_pixel"]
         or overlay["train_pixel"]
-        or overlay["do_it_blobs"]
-        or overlay["train_blobs"]
         or unit.get("capture")
         or unit.get("train")
+        or unit.get("harvest")
+        or (overlay.get("train_blobs") and unit.get("train"))
+        or (overlay.get("do_it_blobs") and (unit.get("capture") or unit.get("harvest")))
     )
     info = driver.find_window()
     payload = {

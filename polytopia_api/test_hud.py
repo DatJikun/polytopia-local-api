@@ -144,6 +144,11 @@ def test_entities_on_synthetic_map():
     # enemy (Vengir) city — Disrof-like wine building
     d.rectangle((480, 360, 540, 420), fill=(70, 35, 80))
     d.rectangle((460, 430, 560, 448), fill=(245, 245, 240))
+    # enemy (Vengir) frost plate + magenta roof (Moonrise Disrof: ~180 grey, not 215 white)
+    d.rectangle((200, 355, 270, 418), fill=(90, 85, 80))
+    d.rectangle((214, 348, 256, 378), fill=(150, 74, 144))
+    d.rectangle((186, 428, 308, 450), fill=(180, 180, 178))
+    d.rectangle((200, 434, 206, 444), fill=(40, 40, 40))
     # unit HP bar
     d.rectangle((700, 500, 728, 505), fill=(90, 210, 50))
     # village hut
@@ -165,10 +170,13 @@ def test_entities_on_synthetic_map():
     tribes = {c["tribe"] for c in cities}
     assert "bardur" in tribes and "oumaji" in tribes, cities
     assert "vengir" in tribes, cities
+    frost = [c for c in cities if 170 <= int(c["x"]) <= 310]
+    assert frost and all(c["tribe"] == "vengir" and c["owner"] == "enemy" for c in frost), cities
     assert villages, villages
     assert classify_tribe((210, 180, 60)) == "oumaji"
     assert classify_tribe((90, 85, 80)) == "bardur"
     assert classify_tribe((70, 35, 80)) == "vengir"
+    assert classify_tribe((150, 74, 144)) == "vengir"  # magenta roof
     assert classify_tribe((30, 40, 28)) == "unknown"  # grass ≠ Bardur city
     assert classify_tribe((58, 199, 249)) == "unknown"  # water ≠ Imperius
     assert classify_tribe((143, 255, 255)) == "unknown"
@@ -197,6 +205,12 @@ def test_capture_and_recruit_targets():
     }
     assert capture_target(obs) == (10, 20)
     assert capture_target({"overlay": {}, "ready": {"capture": True}, "unit": {"capture": True}}) is None
+    noisy = {
+        "overlay": {"do_it_blobs": [{"x": 400, "y": 400, "n": 800}], "capture_blobs": [{"x": 400, "y": 400, "n": 800}]},
+        "ready": {},
+        "unit": {},
+    }
+    assert capture_target(noisy) is None
     obs = {
         "overlay": {"train_blobs": [{"x": 3, "y": 4}], "do_it_blobs": []},
         "ready": {"train": True},
@@ -578,7 +592,53 @@ def test_snapshot_dir_ignores_empty_cwd():
     os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
 
 
+def test_doit_blobs_ignore_map_noise():
+    from polytopia_api.detect import find_doit_buttons
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (20, 20, 20))
+    d = ImageDraw.Draw(im)
+    # specks that used to become dozens of capture_blobs
+    for i in range(20):
+        x, y = 420 + (i % 8) * 40, 300 + (i // 8) * 50
+        d.rectangle((x, y, x + 6, y + 6), fill=(10, 155, 250))
+    # real confirm pill near DO_IT
+    d.rectangle((700, 420, 790, 490), fill=(8, 155, 250))
+    blobs = find_doit_buttons(as_rgb(im))
+    assert len(blobs) <= 4, blobs
+    assert blobs, blobs
+    assert all(b["n"] >= 70 for b in blobs)
+    assert any(abs(b["x"] - 745) < 50 and abs(b["y"] - 455) < 50 for b in blobs)
+
+
+def test_attack_garrison_hp_and_on_city():
+    from polytopia_api.combat import unit_on_city
+    from polytopia_api.commands import _hp_snapshot
+
+    city = {"id": "c1", "kind": "city", "x": 200, "y": 80, "name": "Disrof"}
+    obs = {
+        "layout": {"frame": [1280, 800]},
+        "units": [{"id": "u3", "kind": "unit", "x": 204, "y": 84, "hp": "full", "n": 40}],
+        "cities": [city],
+        "cities_enemy": [city],
+    }
+    hp = _hp_snapshot(obs, "c1", 200, 80)
+    assert hp.get("id") == "u3" and hp.get("hp") == "full"
+    gone = {"layout": {"frame": [1280, 800]}, "units": [], "cities": [city]}
+    after = _hp_snapshot(gone, "c1", 200, 80)
+    assert after == {}
+    on = unit_on_city(obs["units"], city, (1280, 800), {})
+    assert on["ok"] is True
+    far = unit_on_city([{"id": "u9", "x": 800, "y": 400}], city, (1280, 800), {})
+    assert far["ok"] is False
+    panel = unit_on_city([], city, (1280, 800), {"capture": True})
+    assert on["ok"] and panel["reason"] == "panel_capture"
+
+
 def test_find_train_blob_1280():
+    coords.reset()
+    coords.set_frame(1280, 800)
     im = Image.new("RGB", (1280, 800), (20, 20, 20))
     d = ImageDraw.Draw(im)
     d.rectangle((700, 500, 780, 560), fill=(10, 122, 204))
@@ -634,6 +694,8 @@ if __name__ == "__main__":
     test_observe_hud_floor_from_tfile_without_latest()
     test_snapshot_dir_ignores_empty_cwd()
     test_find_train_blob_1280()
+    test_doit_blobs_ignore_map_noise()
+    test_attack_garrison_hp_and_on_city()
     test_attack_marks_and_strike()
     test_dock_zone_blocks_end_turn_pixels()
     print("ok")

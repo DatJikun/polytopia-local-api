@@ -13,9 +13,10 @@ from PIL import Image
 
 from . import coords
 
-# Map area in design space — skip HUD and bottom chrome
+# Map area in design space — skip HUD and bottom chrome.
+# Left 400px was cropping NW cities (Disrof) on 1280×800.
 MAP_Y0, MAP_Y1 = 90, 1040
-MAP_X0, MAP_X1 = 400, 1750
+MAP_X0, MAP_X1 = 80, 1860
 
 # Brand confirm blue (0, 153, 255)
 DOIT_LO = np.array([0, 140, 240], dtype=np.int16)
@@ -158,34 +159,51 @@ def _cluster_params(arr: np.ndarray, radius: int, min_size: int) -> tuple[int, i
     return max(8, int(round(radius * s))), max(3, int(round(min_size * area)))
 
 
-def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
-    """Capture / DO IT — live-frame lower UI, not 2/3 of (1117, 681)."""
+def _color_buttons(
+    arr: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+    kind: str,
+    y0f: float,
+    y1f: float,
+    x0f: float,
+    x1f: float,
+    radius: int,
+    min_size: int,
+) -> list[dict[str, Any]]:
+    """Large UI pills only. Map water / fruit used to yield dozens of blobs."""
     h, w = arr.shape[:2]
-    y0, y1 = int(h * 0.38), int(h * 0.92)
-    x0, x1 = int(w * 0.28), int(w * 0.98)
+    y0, y1 = int(h * y0f), min(int(h * y1f), int(h * 0.84))
+    x0, x1 = int(w * x0f), int(w * x1f)
     region = arr[y0:y1, x0:x1]
     if region.size == 0:
         return []
-    m = np.all((region >= DOIT_LO) & (region <= DOIT_HI), axis=2)
+    m = np.all((region >= lo) & (region <= hi), axis=2)
     ys, xs = np.where(m)
-    rad, mn = _cluster_params(arr, 32, 50)
-    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
-    return [{"kind": "do_it", "x": cx, "y": cy, "n": n} for n, cx, cy in clusters]
+    rad, mn = _cluster_params(arr, radius, min_size)
+    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(24, rad))
+    area = (h * w) / (coords.BASE_W * coords.BASE_H)
+    min_n = max(70, mn)
+    max_n = max(5000, int(round(12000 * area)))
+    out: list[dict[str, Any]] = []
+    for n, cx, cy in clusters:
+        if n < min_n or n > max_n:
+            continue
+        if coords.in_dock_zone(cx, cy):
+            continue
+        out.append({"kind": kind, "x": cx, "y": cy, "n": n})
+    out.sort(key=lambda b: -int(b["n"]))
+    return out[:4]
+
+
+def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
+    """Capture / DO IT — live-frame confirm pill, not 2/3 of (1117, 681)."""
+    return _color_buttons(arr, DOIT_LO, DOIT_HI, "do_it", 0.34, 0.78, 0.30, 0.90, 32, 90)
 
 
 def find_train_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
     """TRAIN is a live-frame UI blob — not 2/3 of (1110, 790), which is the map at 1280."""
-    h, w = arr.shape[:2]
-    y0, y1 = int(h * 0.42), int(h * 0.90)
-    x0, x1 = int(w * 0.28), int(w * 0.98)
-    region = arr[y0:y1, x0:x1]
-    if region.size == 0:
-        return []
-    m = np.all((region >= TRAIN_LO) & (region <= TRAIN_HI), axis=2)
-    ys, xs = np.where(m)
-    rad, mn = _cluster_params(arr, 28, 40)
-    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
-    return [{"kind": "train", "x": cx, "y": cy, "n": n} for n, cx, cy in clusters]
+    return _color_buttons(arr, TRAIN_LO, TRAIN_HI, "train", 0.38, 0.82, 0.28, 0.92, 28, 70)
 
 
 def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:

@@ -1,6 +1,6 @@
 """Map entities from a live-frame screenshot (screen pixels).
 
-Units ≈ HP bars, cities ≈ white nameplates + tribe color above them,
+Units ≈ HP bars, cities ≈ frosted nameplates + tribe color above them,
 villages ≈ small tan hut clusters that are not nameplates. Heuristic —
 think_turn should treat low-n hits as hints, not truth.
 """
@@ -8,6 +8,7 @@ think_turn should treat low-n hits as hints, not truth.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import numpy as np
@@ -31,15 +32,15 @@ def classify_tribe(rgb: list[int] | tuple[int, int, int]) -> str:
     # Imperius royal blue — G well below B, not cyan
     if b >= 110 and b >= r + 40 and g <= min(b - 35, 125) and r <= 95:
         return "imperius"
-    # Vengir wine / dark purple (Disrof etc.) — not grey Bardur, not water
+    # Vengir: wine walls AND magenta/purple roofs (Disrof). Grey stone is Bardur.
+    purple = (r + b) / 2 - g
     if (
-        35 <= max(r, g, b) <= 125
-        and b >= 45
-        and g <= 75
-        and r <= 115
-        and b >= g + 10
-        and r >= g
-        and abs(r - b) <= 45
+        g <= 95
+        and max(r, b) >= 48
+        and max(r, g, b) <= 175
+        and min(r, b) >= 40
+        and purple >= 12
+        and abs(r - b) <= 55
     ):
         return "vengir"
     # Bardur dark wood — not forest green, not near-black water shade
@@ -67,24 +68,31 @@ def villages_enabled() -> bool:
 
 
 def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tuple[str, list[int]]:
-    """Majority tribe in a patch — one water pixel must not become Imperius."""
+    """Majority tribe in a patch — one water pixel must not become Imperius.
+
+    Vengir cities are dark-grey stone + purple roofs. Majority vote would call
+    them Bardur; any real purple roof wins.
+    """
     h, w = arr.shape[:2]
     x0, x1 = max(0, x - radius), min(w, x + radius + 1)
-    y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+    y0, y1 = max(0, y - radius * 2), min(h, y + radius + 1)
     patch = arr[y0:y1, x0:x1]
+    rgb = sample(arr, x, y)
     if patch.size == 0:
-        rgb = sample(arr, x, y)
         return classify_tribe(rgb), rgb
     votes: dict[str, int] = {}
     for py in range(patch.shape[0]):
         for px in range(patch.shape[1]):
-            rgb = [int(v) for v in patch[py, px]]
-            t = classify_tribe(rgb)
+            pix = [int(v) for v in patch[py, px]]
+            t = classify_tribe(pix)
             if t != "unknown":
                 votes[t] = votes.get(t, 0) + 1
-    rgb = sample(arr, x, y)
     if not votes:
         return "unknown", rgb
+    vengir_n = votes.get("vengir", 0)
+    total = sum(votes.values())
+    if vengir_n >= 5 or (total and vengir_n >= 0.12 * total):
+        return "vengir", rgb
     tribe = max(votes, key=votes.get)
     return tribe, rgb
 
@@ -142,8 +150,25 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
     return out[:16]
 
 
+def _clean_city_name(text: str) -> str:
+    raw = "".join(ch for ch in (text or "") if ch.isalpha() or ch in "øæåØÆÅ")
+    if len(raw) < 4:
+        return ""
+    low = raw.lower()
+    if low in {"score", "stars", "turn", "train", "capture", "polytopia", "next", "settings"}:
+        return ""
+    if re.search(r"(.)\1{2,}", low):
+        return ""
+    if not any(c in "aeiouyøæå" for c in low):
+        return ""
+    return raw[:18]
+
+
 def plate_name(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> str:
-    """OCR the white nameplate. Empty if tesseract misses (tests / tiny plates)."""
+    """OCR the nameplate. Moonrise plates are light-grey frost with dark text.
+
+    Forced invert (HUD-style) turns letters white and tesseract misses Disrof.
+    """
     try:
         from pathlib import Path
 
@@ -153,73 +178,137 @@ def plate_name(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> str:
     except Exception:
         return ""
     h, w = arr.shape[:2]
-    x0 = max(0, int(cx - bw // 2 - 8))
-    x1 = min(w, cx + bw // 2 + 8)
-    y0 = max(0, int(cy - max(6, bh // 2) - 4))
-    y1 = min(h, cy + max(6, bh // 2) + 4)
+    x0 = max(0, int(cx - bw // 2 - 10))
+    x1 = min(w, cx + bw // 2 + 10)
+    y0 = max(0, int(cy - max(8, bh // 2) - 6))
+    y1 = min(h, cy + max(8, bh // 2) + 6)
     if x1 - x0 < 12 or y1 - y0 < 6:
         return ""
     crop = Image.fromarray(arr[y0:y1, x0:x1].astype("uint8"), "RGB")
+    best = ""
     try:
-        text = driver.ocr_image(
-            driver._prep_ocr(crop, scale=3, invert=True),
-            Path("/tmp/polytopia-plate.png"),
-            psm=7,
-            whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-        )
+        for invert in (None, False, True):
+            text = driver.ocr_image(
+                driver._prep_ocr(crop, scale=3, invert=invert),
+                Path("/tmp/polytopia-plate.png"),
+                psm=7,
+            )
+            raw = _clean_city_name(text)
+            if len(raw) > len(best):
+                best = raw
+            if len(raw) >= 4:
+                break
     except Exception:
-        return ""
-    raw = "".join(ch for ch in (text or "") if ch.isalpha())
-    if len(raw) < 3:
-        return ""
-    low = raw.lower()
-    if low in {"score", "stars", "turn", "train", "capture", "polytopia", "next", "settings"}:
-        return ""
-    return raw[:18]
+        return best
+    return best
+
+
+def _plate_mask(region: np.ndarray) -> np.ndarray:
+    """Moonrise nameplates are frosted ~180 grey, not solid 215 white.
+
+    Over dark Vengir terrain the banner sits around 150–210. Requiring 215+
+    dropped Disrof. Snow/buildings are filtered later by aspect + contrast.
+    """
+    r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
+    r32, g32, b32 = r.astype(np.int32), g.astype(np.int32), b.astype(np.int32)
+    chroma = np.maximum(r32, np.maximum(g32, b32)) - np.minimum(r32, np.minimum(g32, b32))
+    frost = (r >= 148) & (g >= 148) & (b >= 140) & (r <= 242) & (chroma <= 32)
+    hot = (r >= 210) & (g >= 210) & (b >= 195) & (chroma <= 45)
+    return frost | hot
+
+
+def _city_label_marks(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool:
+    """Moonrise city labels carry a gold level-star (and often a blue pop icon)."""
+    h, w = arr.shape[:2]
+    x0 = max(0, cx - max(10, bw // 2 + 6))
+    x1 = min(w, cx + max(10, bw // 2 + 6) + 1)
+    y0 = max(0, cy - max(6, bh // 2 + 4))
+    y1 = min(h, cy + max(6, bh // 2 + 4) + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 20:
+        return False
+    r, g, b = crop[:, :, 0].astype(np.int32), crop[:, :, 1].astype(np.int32), crop[:, :, 2].astype(np.int32)
+    gold = (r >= 180) & (g >= 140) & (g <= 220) & (b <= 110) & (r >= b + 60)
+    n = int(gold.sum())
+    return 6 <= n <= 420
+
+
+def _plate_contrast(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool:
+    """Letters (or the star/icon) punch holes in the frost; snow does not.
+
+    Solid white test banners have no ink; they still count if the crop is hot.
+    """
+    h, w = arr.shape[:2]
+    x0 = max(0, cx - max(8, bw // 2))
+    x1 = min(w, cx + max(8, bw // 2) + 1)
+    y0 = max(0, cy - max(4, bh // 2))
+    y1 = min(h, cy + max(4, bh // 2) + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 30:
+        return False
+    lum = crop.astype(np.int32).mean(axis=2)
+    if float((lum >= 210).mean()) >= 0.55:
+        return True
+    return float(lum.std()) >= 14.0 and float(lum.min()) <= 120 and float(lum.max()) >= 155
 
 
 def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
-    """White nameplates with a tribe-colored building above. Drops water/UI foam."""
+    """Frosted nameplates with a tribe-colored building above. Drops water/UI foam."""
     y0, y1, x0, x1 = _map_bounds(arr)
     region = arr[y0:y1, x0:x1]
-    r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
-    white = (r >= 215) & (g >= 215) & (b >= 200) & ((np.maximum(r, g) - np.minimum(np.minimum(r, g), b)) <= 45)
-    ys, xs = np.where(white)
+    plate = _plate_mask(region)
+    ys, xs = np.where(plate)
     if xs.size == 0:
         return []
     axs, ays = xs + x0, ys + y0
-    rad, mn = _cluster_params(arr, 22, 40)
+    rad, mn = _cluster_params(arr, 22, 32)
     clusters = merge_clusters(_cluster(ays, axs, radius=rad, min_size=mn), dist=max(32, rad * 2))
     h, w = arr.shape[:2]
     s = min(w / coords.BASE_W, h / coords.BASE_H)
-    up = max(12, int(round(28 * s)))
-    min_w, max_w = int(24 * s), int(140 * s)
-    min_h, max_h = max(4, int(5 * s)), int(24 * s)
+    area = (w * h) / (coords.BASE_W * coords.BASE_H)
+    up = max(22, int(round(50 * s)))
+    min_w, max_w = int(22 * s), int(200 * s)
+    min_h, max_h = max(4, int(5 * s)), max(16, int(36 * s))
+    max_n = max(2200, int(round(4000 * area)))
     cities: list[dict[str, Any]] = []
     for n, cx, cy in clusters:
-        if n > 2500:
+        if n > max_n:
+            continue
+        if cy < int(h * 0.06) or coords.in_dock_zone(cx, cy):
             continue
         bw, bh = _bbox(axs, ays, cx, cy, max(24, rad * 2))
-        if bh <= 0 or bw < min_w or bw > max_w or bh < min_h or bh > max_h:
+        if bh <= 0:
             continue
-        if bw / bh < 1.7:
+        marks = _city_label_marks(arr, cx, cy, bw, bh)
+        lim_h = max_h * 2 if marks else max_h
+        lim_w = int(max_w * 1.35) if marks else max_w
+        if bw < min_w or bw > lim_w or bh < min_h or bh > lim_h:
             continue
-        tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up), radius=8)
+        if bw / bh < (1.15 if marks else 1.55):
+            continue
+        if not _plate_contrast(arr, cx, cy, bw, bh):
+            continue
+        tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up), radius=16)
+        if is_water_rgb(*rgb):
+            continue
         name = plate_name(arr, cx, cy, bw, bh)
         if tribe == "unknown" and not name:
             continue
         own = tribe == _own_tribe()
         if tribe == "unknown":
             own = False
-        if not own and not name:
-            # Sand / yellow UI next to a white streak is not an Oumaji city.
+        if not own and not name and tribe == "oumaji":
+            # Sand / yellow UI next to a frost streak is not an Oumaji city.
+            # Vengir/Imperius keep the hit even when OCR misses Disrof.
             if n < max(70, int(round(90 * s))) or bw < max(32, int(40 * s)):
                 continue
         conf = 0.72 if own else 0.62
         if tribe == "imperius":
             conf = 0.55
-        if name:
-            conf = max(conf, 0.78)
+        if tribe == "vengir":
+            conf = 0.70 if name else 0.64
+        if name and (tribe != _own_tribe() or len(name) >= 5):
+            conf = max(conf, 0.76)
         if tribe == "unknown":
             conf = 0.70 if name else 0.50
         if conf < 0.55:
@@ -241,8 +330,70 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "rgb": rgb,
             }
         )
-    cities.sort(key=lambda c: (-float(c["confidence"]), -int(c["n"])))
-    return cities[:8]
+    cities.sort(
+        key=lambda c: (
+            0 if c.get("owner") == "enemy" else 1,
+            -float(c["confidence"]),
+            -int(c["n"]),
+        )
+    )
+    return _dedupe_cities(cities)[:12]
+
+
+def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
+    tribes = {a.get("tribe"), b.get("tribe")}
+    if tribes == {"vengir", "bardur"}:
+        return max(dist, 96)
+    return dist
+
+
+def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    if a.get("tribe") == "vengir" and b.get("tribe") != "vengir":
+        win = dict(a)
+        if b.get("name") and not win.get("name"):
+            win["name"] = b["name"]
+        return win
+    if b.get("tribe") == "vengir" and a.get("tribe") != "vengir":
+        win = dict(b)
+        if a.get("name") and not win.get("name"):
+            win["name"] = a["name"]
+        return win
+    if a.get("name") and not b.get("name"):
+        return a
+    if b.get("name") and not a.get("name"):
+        return b
+    if float(a.get("confidence") or 0) >= float(b.get("confidence") or 0):
+        return a
+    return b
+
+
+def _dedupe_cities(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
+    """One city can split into frost fragments; keep the better tribe/name.
+
+    Vengir grey stone is often a second Bardur-looking hit next to the purple roof.
+    """
+    items = list(cities)
+    for _ in range(6):
+        out: list[dict[str, Any]] = []
+        merged = False
+        for c in items:
+            hit = None
+            best_d = 10**9
+            for i, o in enumerate(out):
+                d2 = (int(c["x"]) - int(o["x"])) ** 2 + (int(c["y"]) - int(o["y"])) ** 2
+                lim = _city_merge_limit(c, o, dist)
+                if d2 <= lim * lim and d2 < best_d:
+                    best_d = d2
+                    hit = i
+            if hit is None:
+                out.append(c)
+                continue
+            merged = True
+            out[hit] = _prefer_city(c, out[hit])
+        items = out
+        if not merged:
+            break
+    return items
 
 
 def find_villages(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:

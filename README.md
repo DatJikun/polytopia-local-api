@@ -83,7 +83,8 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 `GET /observe` (screen pixels, `hits_space: "screen"`):
 
 - `units[]` — HP-bar, `id` `u0`…, `tribe` / `owner`
-- `cities` / `cities_own` / `cities_enemy` — nameplate + kolor plemienia (Bardur/Oumaji/Vengir) + `name` z OCR gdy się uda; id po nazwie też (`Disrof`)
+- `cities` / `cities_own` / `cities_enemy` — Moonrise **frosted** nameplate (szary ~180, nie 215-white) + kolor plemienia. Vengir = fioletowy dach (nie szary kamień = Bardur). `name` z OCR (bez wymuszonego invert). Lookup po id albo nazwie (`Disrof`). Enemy z plemieniem zostaje nawet gdy OCR nie wczyta nazwy.
+- `POST /capture` — tylko gdy unit **stoi ON** mieście (`unit.capture` albo jednostka na kafelku). Hałaśliwe `do_it_blobs` bez tego flagi **nie** klikają. Max 4 bloby UI, poza dockiem.
 - `attack_marks[]` — czerwone hexy ataku
 - `selected_unit` — typ z panelu, `range`, `naval`, `land_attack`
 - `villages[]` — puste, chyba że `POLYTOPIA_VILLAGES=1`
