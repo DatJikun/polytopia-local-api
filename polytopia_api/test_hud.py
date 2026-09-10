@@ -1,10 +1,12 @@
+from pathlib import Path
+
 import os
 
 from PIL import Image, ImageDraw
 
 from polytopia_api import coords
-from polytopia_api.commands import capture_target, recruit_target
-from polytopia_api.detect import find_move_marks, is_move_rgb, is_water_rgb
+from polytopia_api.commands import _city_click_points, capture_target, recruit_target
+from polytopia_api.detect import as_rgb, find_move_marks, find_train_buttons, is_move_rgb, is_water_rgb
 from polytopia_api.driver import _hud_star_x, parse_hud, parse_unit_panel
 from polytopia_api.entities import classify_tribe, find_cities, find_units, find_villages
 from polytopia_api.mcp import TOOLS, handle
@@ -193,6 +195,16 @@ def test_capture_and_recruit_targets():
         "unit": {"train": True},
     }
     assert recruit_target(obs) == (3, 4)
+    coords.set_frame(1280, 800)
+    ocr_only = {
+        "overlay": {"train_blobs": [], "train_pixel": False},
+        "ready": {"train": True},
+        "unit": {"train": True},
+    }
+    assert recruit_target(ocr_only) is None
+    plate = _city_click_points({"x": 10, "y": 40, "plate_y": 80, "kind": "city"})
+    assert plate[0] == (10, 80, "plate")
+    assert plate[1] == (10, 40, "building")
 
 
 def test_mcp_lists_local_tools():
@@ -400,6 +412,54 @@ def test_snapshot_alerts():
     assert any(a["kind"] == "stars_income_without_turn" for a in d2["alerts"]), d2["alerts"]
 
 
+def test_snapshot_refuses_stale_turn():
+    import tempfile
+
+    from polytopia_api import snapshot as snapmod
+
+    d = tempfile.mkdtemp()
+    os.environ["POLYTOPIA_SNAPSHOTS"] = d
+    snapmod.reset()
+    stale = {
+        "hud": {
+            "turn": 4,
+            "stars": 1,
+            "score": 100,
+            "stale": True,
+            "stale_fields": ["turn"],
+            "turn_trusted": False,
+        },
+        "units": [],
+        "cities_own": [],
+        "cities_enemy": [],
+        "screenshot": None,
+    }
+    r = snapmod.save(stale, reason="end_turn")
+    assert r["ok"] is False
+    assert str(r["tag"]).startswith("untrusted-")
+    assert not (Path(d) / "T4.json").exists()
+
+    r2 = snapmod.save(stale, reason="end_turn", turn=24)
+    assert r2["ok"] and r2["tag"] == "T24" and r2["turn_source"] == "label"
+    assert (Path(d) / "T24.json").is_file()
+
+    r3 = snapmod.save(stale, reason="end_turn")
+    assert r3["ok"] and r3["tag"] == "T25" and r3["turn_source"] == "clock"
+    assert (Path(d) / "T25.json").is_file()
+    snapmod.reset()
+    os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
+
+
+def test_find_train_blob_1280():
+    im = Image.new("RGB", (1280, 800), (20, 20, 20))
+    d = ImageDraw.Draw(im)
+    d.rectangle((700, 500, 780, 560), fill=(10, 122, 204))
+    blobs = find_train_buttons(as_rgb(im))
+    assert blobs, blobs
+    assert abs(blobs[0]["x"] - 740) < 30
+    assert abs(blobs[0]["y"] - 530) < 30
+
+
 if __name__ == "__main__":
     test_parse_hud()
     test_parse_unit()
@@ -415,4 +475,6 @@ if __name__ == "__main__":
     test_hud_star_split()
     test_stable_entity_ids()
     test_snapshot_alerts()
+    test_snapshot_refuses_stale_turn()
+    test_find_train_blob_1280()
     print("ok")

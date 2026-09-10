@@ -170,9 +170,17 @@ def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_train_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
-    ys, xs = _mask_in(arr, TRAIN_LO, TRAIN_HI, y0=700, y1=920, x0=900, x1=1350)
-    rad, mn = _cluster_params(arr, 35, 60)
-    clusters = _cluster(ys, xs, radius=rad, min_size=mn)
+    """TRAIN is a live-frame UI blob — not 2/3 of (1110, 790), which is the map at 1280."""
+    h, w = arr.shape[:2]
+    y0, y1 = int(h * 0.42), int(h * 0.90)
+    x0, x1 = int(w * 0.28), int(w * 0.98)
+    region = arr[y0:y1, x0:x1]
+    if region.size == 0:
+        return []
+    m = np.all((region >= TRAIN_LO) & (region <= TRAIN_HI), axis=2)
+    ys, xs = np.where(m)
+    rad, mn = _cluster_params(arr, 28, 40)
+    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
     return [{"kind": "train", "x": cx, "y": cy, "n": n} for n, cx, cy in clusters]
 
 

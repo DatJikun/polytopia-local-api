@@ -41,16 +41,18 @@ python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 1. `GET /health` — okno + `layout.screen.END_TURN [765,746]`; Tech ≥64 px od End Turn (`tech_too_close: false`).
 2. `POST /click {"name":"TECH_TREE"}` (albo `POST /tech`) — nigdy offset obok End Turn.
 3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnymi id** i kolorem plemienia; `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr (`stale` / `missing` gdy cache). `turn_diff.alerts`.
-4. Mapa bez computerUse: `POST /move-to {"from_id":"u0","city_id":"c1"}`, `POST /capture {"city_id":"c1"}`, `POST /recruit {"city_id":"c0"}`.
-5. `POST /end-turn` — zapis `turn_snapshot/T{n}.json` + `.png` i structured `diff`.
+4. Mapa: `POST /recruit {"city_id":"c0"}` — klika **nameplate** miasta, potem wykryty blob TRAIN (nie 2/3 z 1920, to na 1280 jest środek mapy). Radial jednostek nadal na mapie.
+5. `POST /end-turn` — snapshot. **Stale HUD nie nazywa pliku** (`T4.json` przy T24). Podaj `{"turn":25}` albo po pierwszym labelu zegar `last+1`. Bez tego: `untrusted-*.json` + `ok: false`.
 
 ## Diff tura→tura (kontrola)
 
 Na End Turn (albo `POST /snapshot`):
 
 - JSON + PNG w `turn_snapshot/` (`POLYTOPIA_SNAPSHOTS=`).
+- Numer tury: ręczny `turn=N`, świeże OCR (`turn_trusted`), albo zegar po End Turn. Nigdy cache/stale.
 - Diff: turn/stars, lista unitów (pozycje), miasta own/enemy, fog edge.
-- Alert `turn_jump` gdy tura skacze o **>1**.
+- Alert `turn_jump` gdy **zaufana** tura skacze o **>1**.
+- Alert `stale_hud` gdy OCR nie zasługuje na `T{n}`.
 - Alert `stars_income_without_turn` gdy ★ rosną o income przy `turn_delta==0`.
 
 `GET /diff` / `local_diff` zwraca ostatni structured diff. PNG jest do weryfikacji ludzkiej; bot czyta JSON.
@@ -67,8 +69,8 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 | `local_select_unit` | `POST /select-unit` `{"id":"u0"}` / `{"city_id":"c0"}` / `{"x","y"}` |
 | `local_move_to` | `POST /move-to` `{"city_id":"c1"}` albo `{"x","y"}`, opcjonalnie `from_id` |
 | `local_capture` | `POST /capture` `{"city_id":"c1"}` |
-| `local_recruit` | `POST /recruit` `{"city_id":"c0"}` — radial jednostek nadal na mapie |
-| `local_end_turn` | `POST /end-turn` (snapshot + diff) |
+| `local_recruit` | `POST /recruit` `{"city_id":"c0"}` — nameplate → TRAIN blob; radial na mapie |
+| `local_end_turn` | `POST /end-turn` `{"turn":25}` gdy HUD stale |
 | `local_click` | `POST /click` `{"name":"TECH_TREE"}` albo `{"x","y"}` |
 | `local_tech` | `POST /tech` |
 | `local_diff` | `GET /diff` |

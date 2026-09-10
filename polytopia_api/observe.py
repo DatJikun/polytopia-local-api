@@ -21,7 +21,10 @@ def remember() -> dict[str, Any] | None:
 
 def lookup(obs: dict[str, Any], ident: str) -> dict[str, Any] | None:
     ident = str(ident)
-    for key in ("units", "cities", "cities_own", "cities_enemy", "villages", "move_marks", "fruit"):
+    keys = ("units", "cities", "cities_own", "cities_enemy", "villages", "move_marks", "fruit")
+    if ident.startswith("c"):
+        keys = ("cities", "cities_own", "cities_enemy") + keys
+    for key in keys:
         for it in obs.get(key) or []:
             if str(it.get("id")) == ident:
                 return it

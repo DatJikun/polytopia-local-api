@@ -160,7 +160,12 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up), radius=8)
         if tribe == "unknown":
             continue
-        conf = 0.72 if tribe == _own_tribe() else 0.62
+        own = tribe == _own_tribe()
+        if not own:
+            # Sand / yellow UI next to a white streak is not an Oumaji city.
+            if n < max(70, int(round(90 * s))) or bw < max(32, int(40 * s)):
+                continue
+        conf = 0.72 if own else 0.62
         if tribe == "imperius":
             conf = 0.55
         if conf < 0.55:

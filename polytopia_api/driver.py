@@ -552,14 +552,34 @@ def read_hud(im: Image.Image) -> dict[str, Any]:
     parsed["missing"] = missing
     parsed["stale"] = False
     parsed["stale_fields"] = []
+    parsed["turn_ocr"] = parsed.get("turn")
+    prev_turn = (_HUD_CACHE or {}).get("turn")
+    # Never impersonate a turn number from cache (T24 ended up as T4.json).
     if missing and _HUD_CACHE:
         for k in missing:
+            if k == "turn":
+                continue
             if _HUD_CACHE.get(k) is not None:
                 parsed[k] = _HUD_CACHE[k]
                 parsed["stale"] = True
                 parsed["stale_fields"].append(k)
-    if _filled(parsed) >= 2:
-        _HUD_CACHE = {k: parsed.get(k) for k in ("score", "stars", "turn", "income")}
+    if isinstance(parsed.get("turn"), int) and isinstance(prev_turn, int) and parsed["turn"] < prev_turn:
+        parsed["turn_ocr"] = parsed["turn"]
+        parsed["turn"] = None
+        parsed["stale"] = True
+        if "turn" not in parsed["stale_fields"]:
+            parsed["stale_fields"].append("turn")
+        if "turn" not in parsed["missing"]:
+            parsed["missing"].append("turn")
+    parsed["turn_trusted"] = parsed.get("turn") is not None and "turn" not in parsed["stale_fields"]
+    cache_turn = parsed.get("turn") if parsed.get("turn_trusted") else prev_turn
+    if sum(v is not None for v in (parsed.get("score"), parsed.get("stars"), cache_turn)) >= 2:
+        _HUD_CACHE = {
+            "score": parsed.get("score"),
+            "stars": parsed.get("stars"),
+            "turn": cache_turn,
+            "income": parsed.get("income"),
+        }
 
     parsed["raw"] = raw_full
     parsed["raw_line"] = raw_line

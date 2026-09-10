@@ -215,7 +215,8 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, 200, driver.confirm())
                 return
             if path == "/end-turn":
-                _json(self, 200, commands.end_turn())
+                turn = body.get("turn")
+                _json(self, 200, commands.end_turn(turn=int(turn) if turn is not None else None))
                 return
             if path == "/select-unit":
                 x, y = _xy(body, "x", "y")
@@ -250,7 +251,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/snapshot":
                 obs = do_observe()
-                _json(self, 200, snapshot.save(obs, reason=str(body.get("reason") or "manual")))
+                turn = body.get("turn")
+                _json(self, 200, snapshot.save(
+                    obs,
+                    reason=str(body.get("reason") or "manual"),
+                    turn=int(turn) if turn is not None else None,
+                ))
                 return
             if path == "/calibrate":
                 name = str(body.get("name") or "")

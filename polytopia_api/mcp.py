@@ -81,7 +81,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_recruit",
-        "description": "Open a city (city_id) and click TRAIN. Radial unit portraits still need a map click.",
+        "description": "Select city_id (nameplate) then click a detected TRAIN blob. Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -96,8 +96,13 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_end_turn",
-        "description": "End Turn, then save turn_snapshot/T{n}.json+.png and return structured diff + alerts (turn_jump, stars_income_without_turn).",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "End Turn + snapshot. Pass turn=N if HUD is stale — will not write T4.json from cached OCR.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "turn": {"type": "integer", "description": "Trusted turn label. Required when HUD stale and no clock yet."},
+            },
+        },
     },
     {
         "name": "local_click",
@@ -125,11 +130,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_snapshot",
-        "description": "Save observe JSON+PNG under turn_snapshot/ without ending the turn.",
+        "description": "Save observe JSON+PNG under turn_snapshot/. Pass turn=N — stale HUD is not a filename.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "reason": {"type": "string"},
+                "turn": {"type": "integer"},
             },
         },
     },

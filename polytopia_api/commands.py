@@ -11,8 +11,8 @@ from . import snapshot
 from .observe import observe, remember, lookup
 
 
-def _sleep() -> None:
-    time.sleep(0.4)
+def _sleep(seconds: float = 0.4) -> None:
+    time.sleep(seconds)
 
 
 def _click(x: int, y: int, space: str = "screen", repeats: int = 1) -> dict[str, Any]:
@@ -24,6 +24,24 @@ def _resolve(ident: str | None, space: str = "screen") -> dict[str, Any] | None:
         return None
     obs = remember() or observe()
     return lookup(obs, str(ident))
+
+
+def _entity_click_xy(hit: dict[str, Any]) -> tuple[int, int]:
+    """Cities: nameplate selects the city. Building often has a unit on the tile."""
+    x = int(hit["x"])
+    if hit.get("kind") == "city" or hit.get("plate_y") is not None:
+        return x, int(hit.get("plate_y") or hit["y"])
+    return x, int(hit["y"])
+
+
+def _city_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
+    x = int(hit["x"])
+    plate = int(hit.get("plate_y") or hit["y"])
+    building = int(hit["y"])
+    points = [(x, plate, "plate")]
+    if abs(building - plate) >= 6:
+        points.append((x, building, "building"))
+    return points
 
 
 def select_unit(
@@ -41,7 +59,7 @@ def select_unit(
         hit = lookup(obs, ident)
         if not hit:
             return {"ok": False, "name": "select_unit", "reason": f"no entity {ident}"}
-        x, y = int(hit["x"]), int(hit["y"])
+        x, y = _entity_click_xy(hit)
         space = "screen"
     if x is None or y is None:
         return {"ok": False, "name": "select_unit", "reason": "need x,y or id/city_id"}
@@ -153,11 +171,13 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
 
 
 def recruit_target(obs: dict[str, Any]) -> tuple[int, int] | None:
+    """Prefer a live TRAIN blob. Never click scaled TRAIN just because OCR said 'Train'."""
     overlay = obs.get("overlay") or {}
     blobs = overlay.get("train_blobs") or []
     if blobs:
-        return int(blobs[0]["x"]), int(blobs[0]["y"])
-    if overlay.get("train_pixel") or (obs.get("unit") or {}).get("train") or obs.get("ready", {}).get("train"):
+        best = max(blobs, key=lambda b: int(b.get("n") or 0))
+        return int(best["x"]), int(best["y"])
+    if overlay.get("train_pixel"):
         return tuple(coords.TRAIN)
     return None
 
@@ -170,36 +190,78 @@ def recruit(
     unit: str | None = None,
     space: str = "screen",
 ) -> dict[str, Any]:
-    """Open a city (city_id) and hit TRAIN. Radial portraits stay on-map clicks."""
-    opened = None
+    """Select city_id (nameplate first) and click a detected TRAIN blob."""
     ident = city_id or id
-    if ident or x is not None:
-        opened = select_unit(x=x, y=y, id=ident, city_id=city_id, space=space)
-        if not opened.get("ok"):
-            return {**opened, "name": "recruit"}
-    obs = remember() or observe()
-    target = recruit_target(obs)
+    hit = _resolve(ident, space) if ident else None
+    if ident and not hit:
+        return {"ok": False, "name": "recruit", "reason": f"no entity {ident}", "city_id": ident}
+    tried: list[dict[str, Any]] = []
+    opened = None
+    last_obs = remember()
+    points: list[tuple[int, int, str]] = []
+    if hit:
+        points = _city_click_points(hit)
+    elif x is not None and y is not None:
+        points = [(int(x), int(y), "xy")]
+    target: tuple[int, int] | None = None
+    if not points:
+        last_obs = last_obs or observe()
+        target = recruit_target(last_obs)
+        if target is None:
+            return {
+                "ok": False,
+                "name": "recruit",
+                "reason": "need city_id (or x,y) — TRAIN not already visible",
+                "city_id": ident,
+                "unit_panel": last_obs.get("unit"),
+                "ready": last_obs.get("ready"),
+                "overlay": {
+                    "train_pixel": (last_obs.get("overlay") or {}).get("train_pixel"),
+                    "train_blobs": (last_obs.get("overlay") or {}).get("train_blobs"),
+                    "train_rgb": (last_obs.get("overlay") or {}).get("train_rgb"),
+                },
+            }
+    for cx, cy, where in points:
+        opened = {
+            **_click(cx, cy, space="screen"),
+            "where": where,
+            "city_id": ident,
+        }
+        _sleep(0.7)
+        last_obs = observe()
+        target = recruit_target(last_obs)
+        tried.append({"where": where, "x": cx, "y": cy, "train": target is not None})
+        if target is not None:
+            break
     if target is None:
         return {
             "ok": False,
             "name": "recruit",
-            "reason": "TRAIN not visible — pass city_id or open the city first",
-            "city_id": city_id or ident,
+            "reason": "TRAIN not visible after city_id click — calibrate TRAIN or click the city",
+            "city_id": ident,
+            "hit": hit,
+            "tried": tried,
             "opened": opened,
-            "unit_panel": obs.get("unit"),
-            "ready": obs.get("ready"),
+            "unit_panel": (last_obs or {}).get("unit"),
+            "ready": (last_obs or {}).get("ready"),
+            "overlay": {
+                "train_pixel": ((last_obs or {}).get("overlay") or {}).get("train_pixel"),
+                "train_blobs": ((last_obs or {}).get("overlay") or {}).get("train_blobs"),
+                "train_rgb": ((last_obs or {}).get("overlay") or {}).get("train_rgb"),
+            },
         }
     clicked = _click(target[0], target[1], space="screen")
-    _sleep()
+    _sleep(0.5)
     after = observe()
     return {
         "ok": True,
         "name": "recruit",
-        "city_id": city_id or ident,
+        "city_id": ident,
         "x": clicked["x"],
         "y": clicked["y"],
         "want_unit": unit,
-        "hint": "city radial portraits are on the map; click one or omit unit",
+        "tried": tried,
+        "hint": "radial portraits are on the map; click one after TRAIN",
         "opened": opened,
         "hud": after.get("hud"),
         "unit": after.get("unit"),
@@ -208,19 +270,31 @@ def recruit(
     }
 
 
-def end_turn() -> dict[str, Any]:
-    """End Turn, then snapshot JSON+PNG and return structured diff."""
+def end_turn(turn: int | None = None) -> dict[str, Any]:
+    """End Turn, then snapshot JSON+PNG. Stale HUD cannot name the file T{ocr}."""
     before = remember() or observe()
     clicked = driver.end_turn()
     time.sleep(1.0)
     after = observe()
-    snap = snapshot.save(after, reason="end_turn")
-    d = snapshot.diff(before, after, reason="end_turn")
+    snap = snapshot.save(after, reason="end_turn", turn=turn)
+    d = snap.get("diff") or snapshot.diff(before, after, reason="end_turn")
+    alerts = list(d.get("alerts") or [])
+    if not snap.get("ok"):
+        alerts.append(
+            {
+                "kind": "stale_hud",
+                "ocr": snap.get("ocr_turn"),
+                "hint": "pass turn=N on /end-turn — snapshot kept as untrusted-*.json, not T4.json",
+            }
+        )
     return {
         **clicked,
         "name": "end_turn",
         "hud": after.get("hud"),
         "diff": d,
-        "snapshot": {"json": snap.get("json"), "png": snap.get("png")},
-        "alerts": d.get("alerts") or [],
+        "snapshot": snap,
+        "alerts": alerts,
+        "turn": snap.get("turn"),
+        "turn_source": snap.get("turn_source"),
+        "turn_trusted": snap.get("turn_trusted"),
     }
