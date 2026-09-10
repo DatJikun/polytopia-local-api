@@ -101,6 +101,7 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
     im = Image.open(path)
     coords.set_frame(*im.size)
     hud = driver.read_hud(im)
+    snapshot.apply_turn_floor(hud)
     unit = driver.parse_unit_panel(
         driver.ocr_crop(im, coords.UNIT_CROP, driver.UNIT_PATH)
     )

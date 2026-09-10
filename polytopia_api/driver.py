@@ -571,8 +571,17 @@ def read_hud(im: Image.Image) -> dict[str, Any]:
             parsed["stale_fields"].append("turn")
         if "turn" not in parsed["missing"]:
             parsed["missing"].append("turn")
-    parsed["turn_trusted"] = parsed.get("turn") is not None and "turn" not in parsed["stale_fields"]
-    cache_turn = parsed.get("turn") if parsed.get("turn_trusted") else prev_turn
+    from . import snapshot as _snap
+
+    _snap.apply_turn_floor(parsed)
+    parsed["turn_trusted"] = parsed.get("turn") is not None and "turn" not in (parsed.get("stale_fields") or [])
+    floor = parsed.get("turn_floor")
+    if parsed.get("turn_trusted"):
+        cache_turn = parsed.get("turn")
+    elif isinstance(floor, int):
+        cache_turn = floor
+    else:
+        cache_turn = prev_turn
     if sum(v is not None for v in (parsed.get("score"), parsed.get("stars"), cache_turn)) >= 2:
         _HUD_CACHE = {
             "score": parsed.get("score"),

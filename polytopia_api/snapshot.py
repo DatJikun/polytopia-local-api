@@ -60,6 +60,7 @@ def slim(obs: dict[str, Any]) -> dict[str, Any]:
             "turn_trusted": hud.get("turn_trusted"),
             "turn_source": hud.get("turn_source"),
             "turn_ocr": hud.get("turn_ocr"),
+            "turn_floor": hud.get("turn_floor"),
         },
         "units": _ents(obs.get("units")),
         "cities_own": _ents(obs.get("cities_own")),
@@ -101,6 +102,31 @@ def last_trusted_turn(obs: dict[str, Any] | None = None) -> int | None:
     if hud_turn_trusted(hud):
         return int(hud["turn"])
     return None
+
+
+def apply_turn_floor(hud: dict[str, Any]) -> dict[str, Any]:
+    """Observe/HUD: OCR behind last labeled/clocked turn is not trusted (T26 vs OCR 2)."""
+    floor = last_trusted_turn()
+    hud["turn_floor"] = floor
+    ocr = hud.get("turn_ocr")
+    if not isinstance(ocr, int):
+        ocr = hud.get("turn") if isinstance(hud.get("turn"), int) else None
+    if isinstance(ocr, int):
+        hud["turn_ocr"] = ocr
+    if isinstance(ocr, int) and isinstance(floor, int) and ocr < floor:
+        hud["turn"] = None
+        hud["turn_trusted"] = False
+        hud["stale"] = True
+        hud["turn_untrusted_reason"] = "ocr_turn_behind"
+        fields = list(hud.get("stale_fields") or [])
+        if "turn" not in fields:
+            fields.append("turn")
+        hud["stale_fields"] = fields
+        missing = list(hud.get("missing") or [])
+        if "turn" not in missing:
+            missing.append("turn")
+        hud["missing"] = missing
+    return hud
 
 
 def resolve_turn(

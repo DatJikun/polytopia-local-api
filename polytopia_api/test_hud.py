@@ -450,6 +450,66 @@ def test_snapshot_refuses_stale_turn():
     os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
 
 
+def test_observe_hud_untrusts_ocr_behind_floor():
+    import tempfile
+
+    from polytopia_api import snapshot as snapmod
+
+    d = tempfile.mkdtemp()
+    os.environ["POLYTOPIA_SNAPSHOTS"] = d
+    snapmod.reset()
+    labeled = {
+        "hud": {"turn": 26, "stars": 10, "score": 4550, "stale": False, "turn_trusted": True},
+        "units": [],
+        "cities_own": [],
+        "cities_enemy": [],
+        "screenshot": None,
+    }
+    assert snapmod.save(labeled, reason="manual", turn=26)["ok"]
+
+    behind = {
+        "turn": 2,
+        "turn_ocr": 2,
+        "stars": 10,
+        "score": 4550,
+        "stale": False,
+        "stale_fields": [],
+        "turn_trusted": True,
+        "missing": [],
+    }
+    snapmod.apply_turn_floor(behind)
+    assert behind["turn_trusted"] is False
+    assert behind["turn"] is None
+    assert behind["turn_ocr"] == 2
+    assert behind["turn_floor"] == 26
+    assert behind["turn_untrusted_reason"] == "ocr_turn_behind"
+    assert "turn" in behind["stale_fields"]
+
+    ok = {
+        "turn": 26,
+        "turn_ocr": 26,
+        "stale": False,
+        "stale_fields": [],
+        "turn_trusted": True,
+        "missing": [],
+    }
+    snapmod.apply_turn_floor(ok)
+    assert ok["turn_trusted"] is True and ok["turn"] == 26
+
+    nxt = {
+        "turn": 27,
+        "turn_ocr": 27,
+        "stale": False,
+        "stale_fields": [],
+        "turn_trusted": True,
+        "missing": [],
+    }
+    snapmod.apply_turn_floor(nxt)
+    assert nxt["turn_trusted"] is True and nxt["turn"] == 27
+    snapmod.reset()
+    os.environ.pop("POLYTOPIA_SNAPSHOTS", None)
+
+
 def test_find_train_blob_1280():
     im = Image.new("RGB", (1280, 800), (20, 20, 20))
     d = ImageDraw.Draw(im)
@@ -476,5 +536,6 @@ if __name__ == "__main__":
     test_stable_entity_ids()
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
+    test_observe_hud_untrusts_ocr_behind_floor()
     test_find_train_blob_1280()
     print("ok")

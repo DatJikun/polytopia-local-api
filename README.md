@@ -40,7 +40,7 @@ python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 
 1. `GET /health` — okno + `layout.screen.END_TURN [765,746]`; Tech ≥64 px od End Turn (`tech_too_close: false`).
 2. `POST /click {"name":"TECH_TREE"}` (albo `POST /tech`) — nigdy offset obok End Turn.
-3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnymi id** i kolorem plemienia; `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr (`stale` / `missing` gdy cache). `turn_diff.alerts`.
+3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnymi id** i kolorem plemienia; `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr. `hud.turn_trusted` jest **false** gdy OCR tury jest poniżej last labeled/clocked (`turn_floor`); `turn` wtedy `null`, `turn_ocr` zostaje (np. 2 przy T26). `stale` / `missing` gdy cache. `turn_diff.alerts`.
 4. Mapa: `POST /recruit {"city_id":"c0"}` — klika **nameplate** miasta, potem wykryty blob TRAIN (nie 2/3 z 1920, to na 1280 jest środek mapy). Radial jednostek nadal na mapie.
 5. `POST /end-turn` — snapshot. **Stale HUD nie nazywa pliku** (`T4.json` przy T24). Podaj `{"turn":25}` albo po pierwszym labelu zegar `last+1`. Bez tego: `untrusted-*.json` + `ok: false`.
 
@@ -85,7 +85,7 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 - `villages[]` — puste, chyba że `POLYTOPIA_VILLAGES=1`
 - `fog_edge[]`
 - `ready.capture` / `ready.train` / `ready.move` / `ready.harvest`
-- HUD: crop + whitelist cyfr, split wokół złotej gwiazdy; jak OCR skłamie, `hud.stale` / `hud.missing` / `hud.raw` / `hud.digits`
+- HUD: crop + whitelist cyfr, split wokół złotej gwiazdy. `turn_trusted` + `turn_floor` z last snapshot; OCR 2 przy T26 → `turn: null`, `turn_ocr: 2`. `hud.stale` / `hud.missing` / `hud.raw` / `hud.digits`
 
 Detekcja mapy jest heurystyką z pikseli, nie native state.
 
