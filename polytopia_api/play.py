@@ -33,6 +33,10 @@ def plan(obs: dict[str, Any]) -> dict[str, Any]:
         return {"name": "back", "reason": "settings/tech overlay"}
     if unit.get("clear_forest"):
         return {"name": "back", "reason": "refuse Clear Forest"}
+    if unit.get("capture") and (confirm_ready or overlay.get("do_it_pixel") or overlay.get("do_it_blobs")):
+        blobs = overlay.get("capture_blobs") or overlay.get("do_it_blobs") or []
+        x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.DO_IT)
+        return {"name": "capture", "x": x, "y": y}
     if confirm_ready and (unit.get("harvest") or overlay.get("do_it_pixel") or overlay.get("do_it_blobs")):
         blobs = overlay.get("do_it_blobs") or []
         x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.DO_IT)
@@ -95,7 +99,7 @@ def _execute(name: str, planned: dict[str, Any], before: dict[str, Any]) -> dict
         driver.back()
         _sleep()
         return _result(before, action)
-    if name in {"confirm_harvest", "confirm_train", "confirm_do_it"}:
+    if name in {"confirm_harvest", "confirm_train", "confirm_do_it", "capture"}:
         driver.click(int(action["x"]), int(action["y"]))
         _sleep()
         return _result(before, action)

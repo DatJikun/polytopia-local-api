@@ -1,5 +1,6 @@
 """Local Polytopia control API (screenshot + xdotool, not an official game API)."""
 
+from .commands import capture, move_to, recruit, select_unit
 from .driver import (
     PolytopiaError,
     activate,

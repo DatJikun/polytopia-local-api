@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "polytopia-local": {
+      "command": "python3",
+      "args": ["-m", "polytopia_api.mcp"],
+      "cwd": "/workspace/polytopia-local-api",
+      "env": {
+        "POLYTOPIA_API": "http://127.0.0.1:8765",
+        "PYTHONPATH": "/workspace/polytopia-local-api"
+      }
+    }
+  }
+}

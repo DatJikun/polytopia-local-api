@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 
 from . import coords
 
@@ -260,17 +260,90 @@ def confirm() -> dict[str, Any]:
     return {**click(*coords.DO_IT), "kind": "do_it", "rgb": [r, g, b]}
 
 
-def ocr_crop(im: Image.Image, box: tuple[int, int, int, int], path: Path) -> str:
-    coords.set_frame(*im.size)
-    crop_box = coords.clamp_box(tuple(int(v) for v in box), *im.size)
-    crop = im.crop(crop_box)
-    crop.save(path)
-    r = _run(["tesseract", str(path), "stdout", "--psm", "6"], timeout=15)
+def _prep_ocr(crop: Image.Image, scale: int = 3) -> Image.Image:
+    """Dark HUD → white paper, upscaled. Helps tesseract on tiny digits."""
+    g = crop.convert("L")
+    g = ImageOps.autocontrast(g)
+    pixels = list(g.getdata())
+    mean = sum(pixels) / max(1, len(pixels))
+    if mean < 140:
+        g = ImageOps.invert(g)
+    g = ImageEnhance.Contrast(g).enhance(1.7)
+    w, h = g.size
+    return g.resize((max(1, w * scale), max(1, h * scale)), Image.Resampling.LANCZOS)
+
+
+def ocr_image(
+    im: Image.Image,
+    path: Path,
+    psm: int = 6,
+    whitelist: str | None = None,
+) -> str:
+    im.save(path)
+    args = ["tesseract", str(path), "stdout", "--psm", str(psm), "--oem", "3"]
+    if whitelist:
+        args += ["-c", f"tessedit_char_whitelist={whitelist}"]
+    r = _run(args, timeout=15)
     return (r.stdout or "").strip()
 
 
+def ocr_crop(im: Image.Image, box: tuple[int, int, int, int], path: Path) -> str:
+    coords.set_frame(*im.size)
+    crop_box = coords.clamp_box(tuple(int(v) for v in box), *im.size)
+    crop = _prep_ocr(im.crop(crop_box))
+    return ocr_image(crop, path, psm=6)
+
+
 def _ocr_hud_text(im: Image.Image) -> str:
-    return ocr_crop(im, coords.HUD_CROP, HUD_PATH)
+    return read_hud(im).get("raw") or ""
+
+
+def _first_plausible(nums: list[int], lo: int, hi: int) -> int | None:
+    for n in nums:
+        if lo <= n <= hi:
+            return n
+    return None
+
+
+def read_hud(im: Image.Image) -> dict[str, Any]:
+    """OCR the top strip in pieces: score | ★ | turn, digit-whitelist on slices."""
+    coords.set_frame(*im.size)
+    box = coords.clamp_box(tuple(int(v) for v in coords.HUD_CROP), *im.size)
+    crop = im.crop(box)
+    prepared = _prep_ocr(crop, scale=3)
+    raw_full = ocr_image(prepared, HUD_PATH, psm=6)
+    raw_line = ocr_image(prepared, Path("/tmp/polytopia-hud-line.png"), psm=7)
+    parsed = parse_hud("\n".join(x for x in (raw_full, raw_line) if x))
+
+    w, h = crop.size
+    slices = {
+        "score": (0, 0, max(1, int(w * 0.42)), h),
+        "stars": (int(w * 0.30), 0, max(int(w * 0.30) + 1, int(w * 0.70)), h),
+        "turn": (int(w * 0.62), 0, w, h),
+    }
+    digits: dict[str, str] = {}
+    for key, sl in slices.items():
+        sub = _prep_ocr(crop.crop(sl), scale=4)
+        txt = ocr_image(
+            sub,
+            Path(f"/tmp/polytopia-hud-{key}.png"),
+            psm=7,
+            whitelist="0123456789,",
+        )
+        digits[key] = txt
+        nums = [int(n.replace(",", "")) for n in re.findall(r"\d{1,3}(?:,\d{3})+|\d+", txt)]
+        if key == "score" and parsed.get("score") is None:
+            parsed["score"] = _first_plausible(nums, 0, 80000)
+        elif key == "stars" and parsed.get("stars") is None:
+            parsed["stars"] = _first_plausible(nums, 0, 200)
+        elif key == "turn" and parsed.get("turn") is None:
+            parsed["turn"] = _first_plausible(nums, 0, 200)
+
+    parsed["raw"] = raw_full
+    parsed["raw_line"] = raw_line
+    parsed["digits"] = digits
+    parsed["hud_crop"] = list(box)
+    return parsed
 
 
 def parse_hud(text: str) -> dict[str, Any]:
@@ -322,8 +395,18 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
     train = "train" in low
     village = "village" in low
     settings = "settings" in low
+    capture_soon = any(
+        s in low
+        for s in (
+            "ready to capture next",
+            "will be ready to capture",
+            "entering village",
+            "entering city",
+        )
+    )
+    capture = ("capture" in low or "conquer" in low) and not capture_soon
     unit = None
-    for name in ("catapult", "archer", "warrior", "rider", "defender", "knight", "giant"):
+    for name in ("catapult", "archer", "warrior", "rider", "defender", "knight", "giant", "bomber"):
         if name in low:
             unit = name
             break
@@ -337,6 +420,8 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
         "train": train,
         "village": village,
         "settings": settings,
+        "capture": capture,
+        "capture_soon": capture_soon,
     }
 
 
@@ -344,7 +429,7 @@ def hud() -> dict[str, Any]:
     shot = screenshot()
     im = Image.open(shot)
     coords.set_frame(*im.size)
-    parsed = parse_hud(_ocr_hud_text(im))
+    parsed = read_hud(im)
     info = find_window()
     parsed["window"] = {k: info[k] for k in ("found", "pid", "window_id", "width", "height")}
     parsed["layout"] = coords.layout_info()

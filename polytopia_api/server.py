@@ -1,19 +1,9 @@
 """Local HTTP API wrapping the Polytopia Unity window.
 
-  python3 -m polytopia_api.server
+  python3 -m polytopia_api.server   # http://127.0.0.1:8765
+  python3 -m polytopia_api.mcp      # MCP stdio → same server (local_* tools)
 
-  GET  /health
-  GET  /hud
-  GET  /observe
-  GET  /screenshot
-  GET  /pixel?x=1117&y=681
-  POST /click     {"x":1111,"y":1130,"repeats":1}
-  POST /confirm
-  POST /end-turn
-  POST /back
-  POST /step          # one playbook action
-  POST /play {"n":5}  # up to n steps, stops at End Turn
-  POST /key       {"key":"space"}   # Escape is refused
+think_turn is the brain. /step is a playbook fallback only.
 """
 
 from __future__ import annotations
@@ -24,11 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-# Allow `python3 server.py` from this folder.
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "polytopia_api"
 
+from . import commands
 from . import coords
 from . import driver
 from .observe import observe as do_observe
@@ -38,6 +28,32 @@ from .play import step as do_step
 
 HOST = "127.0.0.1"
 PORT = 8765
+
+ROUTES = {
+    "GET": [
+        "/",
+        "/health",
+        "/hud",
+        "/observe",
+        "/pixel",
+        "/screenshot",
+    ],
+    "POST": [
+        "/click",
+        "/confirm",
+        "/end-turn",
+        "/back",
+        "/key",
+        "/calibrate",
+        "/select-unit",
+        "/move-to",
+        "/capture",
+        "/recruit",
+        "/step",
+        "/plan",
+        "/play",
+    ],
+}
 
 
 def _json(handler: BaseHTTPRequestHandler, code: int, payload: dict) -> None:
@@ -66,6 +82,13 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict:
     return data
 
 
+def _xy(body: dict, *keys: str) -> tuple[int | None, int | None]:
+    for a, b in (keys[i : i + 2] for i in range(0, len(keys), 2)):
+        if body.get(a) is not None and body.get(b) is not None:
+            return int(body[a]), int(body[b])
+    return None, None
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -84,6 +107,27 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         q = parse_qs(parsed.query)
         try:
+            if path == "/":
+                _json(self, 200, {
+                    "ok": True,
+                    "mcp": [
+                        "local_health",
+                        "local_observe",
+                        "local_hud",
+                        "local_select_unit",
+                        "local_move_to",
+                        "local_capture",
+                        "local_recruit",
+                        "local_end_turn",
+                        "local_click",
+                        "local_back",
+                        "local_confirm",
+                        "local_calibrate",
+                        "local_step",
+                    ],
+                    "routes": ROUTES,
+                })
+                return
             if path == "/health":
                 info = driver.find_window()
                 driver.sync_layout(info)
@@ -91,6 +135,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "game": info,
                     "layout": coords.layout_info(),
+                    "mcp": "python3 -m polytopia_api.mcp",
                 })
                 return
             if path == "/hud":
@@ -100,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, 200, do_observe())
                 return
             if path == "/pixel":
-                space = (q.get("space") or ["design"])[0]
+                space = (q.get("space") or ["screen"])[0]
                 x = int((q.get("x") or ["0"])[0])
                 y = int((q.get("y") or ["0"])[0])
                 driver.sync_layout()
@@ -130,11 +175,11 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         try:
             body = _read_json(self)
+            space = str(body.get("space") or "screen")
             if path == "/click":
                 x = int(body["x"])
                 y = int(body["y"])
                 repeats = int(body.get("repeats") or 1)
-                space = str(body.get("space") or "design")
                 _json(self, 200, driver.click(x, y, repeats=repeats, space=space))
                 return
             if path == "/confirm":
@@ -142,6 +187,46 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/end-turn":
                 _json(self, 200, driver.end_turn())
+                return
+            if path == "/select-unit":
+                x, y = _xy(body, "x", "y")
+                _json(self, 200, commands.select_unit(
+                    x=x, y=y, id=body.get("id"), space=space,
+                ))
+                return
+            if path == "/move-to":
+                x, y = _xy(body, "x", "y")
+                if x is None:
+                    raise KeyError("x")
+                fx, fy = _xy(body, "from_x", "from_y")
+                _json(self, 200, commands.move_to(
+                    x=x, y=y, from_x=fx, from_y=fy,
+                    from_id=body.get("from_id") or body.get("unit_id"),
+                    space=space,
+                ))
+                return
+            if path == "/capture":
+                _json(self, 200, commands.capture())
+                return
+            if path == "/recruit":
+                x, y = _xy(body, "x", "y")
+                _json(self, 200, commands.recruit(
+                    x=x, y=y, id=body.get("id"),
+                    unit=body.get("unit"), space=space,
+                ))
+                return
+            if path == "/calibrate":
+                name = str(body.get("name") or "")
+                if not name:
+                    raise KeyError("name")
+                x = int(body["x"])
+                y = int(body["y"])
+                driver.sync_layout()
+                rec = coords.set_empirical(name, x, y)
+                saved = coords.save_empirical()
+                rec["saved"] = str(saved)
+                rec["layout"] = coords.layout_info()
+                _json(self, 200, rec)
                 return
             if path == "/step":
                 _json(self, 200, do_step())
@@ -170,6 +255,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    coords.load_empirical()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"polytopia api http://{HOST}:{PORT}", flush=True)
     try:

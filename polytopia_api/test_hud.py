@@ -1,8 +1,11 @@
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from polytopia_api import coords
+from polytopia_api.commands import capture_target, recruit_target
 from polytopia_api.detect import find_move_marks, is_move_rgb, is_water_rgb
 from polytopia_api.driver import parse_hud, parse_unit_panel
+from polytopia_api.entities import classify_tribe, find_cities, find_units, find_villages
+from polytopia_api.mcp import TOOLS, handle
 from polytopia_api.play import plan
 
 
@@ -28,6 +31,12 @@ def test_parse_unit():
     assert u["harvest"]
     u = parse_unit_panel("Clear Forest")
     assert u["clear_forest"]
+    u = parse_unit_panel("Capture\nThis city is ready to capture.")
+    assert u["capture"] and not u["capture_soon"]
+    u = parse_unit_panel("Entering Village! Will be ready to capture next turn.")
+    assert u["capture_soon"] and not u["capture"] and u["village"]
+    u = parse_unit_panel("Train\nChoose a unit.")
+    assert u["train"]
 
 
 def test_water_vs_move():
@@ -42,11 +51,9 @@ def test_water_vs_move():
 def test_find_move_marks_ignores_water():
     im = Image.new("RGB", (1920, 1200), (20, 20, 20))
     px = im.load()
-    # water lake
     for y in range(700, 820):
         for x in range(900, 1100):
             px[x, y] = (58, 199, 249)
-    # move highlight blob
     for y in range(590, 610):
         for x in range(1230, 1255):
             px[x, y] = (146, 204, 255)
@@ -55,28 +62,30 @@ def test_find_move_marks_ignores_water():
     assert all(abs(m["x"] - 1242) < 20 and abs(m["y"] - 600) < 20 for m in marks)
 
 
-def test_scale_1280x800():
+def test_empirical_end_turn_1280():
+    coords.reset()
     coords.set_frame(1920, 1200)
     assert tuple(coords.END_TURN) == (1111, 1130)
-    assert tuple(coords.DO_IT) == (1117, 681)
+    assert coords.source_of("END_TURN") == "scaled"
 
     coords.set_frame(1280, 800)
+    # Empiria, not 2/3 of 1111,1130 (that would be 741,753 and misses the dock).
+    assert tuple(coords.END_TURN) == (765, 746)
+    assert coords.source_of("END_TURN") == "empirical"
     sx, sy = 1280 / 1920, 800 / 1200
-    assert abs(sx - sy) < 1e-9  # same 16:10
-    ex, ey = tuple(coords.END_TURN)
-    assert ex == round(1111 * sx)
-    assert ey == round(1130 * sy)
     dx, dy = tuple(coords.DO_IT)
-    assert dx == round(1117 * sx)
-    assert dy == round(681 * sy)
-    assert coords.xy(1111, 1130) == (ex, ey)  # POST /click space=design
-    # HUD crop stays in the top band
-    hud = tuple(coords.HUD_CROP)
-    assert hud[1] == 0 and hud[3] < 80
+    assert coords.source_of("DO_IT") == "scaled"
+    assert dx == round(1117 * sx) and dy == round(681 * sy)
     info = coords.layout_info()
     assert info["frame"] == [1280, 800]
-    assert info["scale"] == [0.6667, 0.6667]
-    coords.set_frame(1920, 1200)
+    assert info["empirical"] is True
+    assert info["source"]["END_TURN"] == "empirical"
+    hud = tuple(coords.HUD_CROP)
+    assert hud[1] == 0 and hud[3] <= 80
+    coords.set_empirical("DO_IT", 740, 450)
+    assert tuple(coords.DO_IT) == (740, 450)
+    assert coords.source_of("DO_IT") == "empirical"
+    coords.reset()
 
 
 def test_find_move_marks_1280():
@@ -94,7 +103,69 @@ def test_find_move_marks_1280():
     assert all(abs(m["x"] - cx) < 25 and abs(m["y"] - cy) < 25 for m in marks)
 
 
+def test_entities_on_synthetic_map():
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    # own (Bardur) city: grey building + white nameplate
+    d.rectangle((880, 360, 940, 420), fill=(90, 85, 80))
+    d.rectangle((860, 430, 960, 448), fill=(240, 240, 235))
+    # enemy (Oumaji) city
+    d.rectangle((1180, 360, 1240, 420), fill=(210, 180, 60))
+    d.rectangle((1160, 430, 1260, 448), fill=(245, 245, 240))
+    # unit HP bar
+    d.rectangle((700, 500, 728, 505), fill=(90, 210, 50))
+    # village hut
+    d.rectangle((548, 628, 564, 644), fill=(168, 118, 62))
+    arr = __import__("numpy").asarray(im).astype("int16")
+    units = find_units(arr)
+    cities = find_cities(arr)
+    villages = find_villages(arr, cities)
+    assert units, units
+    assert any(abs(u["x"] - 714) < 25 for u in units)
+    assert len(cities) >= 2, cities
+    owners = {c["owner"] for c in cities}
+    assert "own" in owners and "enemy" in owners, cities
+    assert villages, villages
+    assert classify_tribe((210, 180, 60)) == "oumaji"
+    assert classify_tribe((90, 85, 80)) == "bardur"
+
+
+def test_capture_and_recruit_targets():
+    coords.reset()
+    coords.set_frame(1920, 1200)
+    assert capture_target({"overlay": {}, "ready": {}, "unit": {}}) is None
+    obs = {
+        "overlay": {"do_it_blobs": [{"x": 10, "y": 20}], "train_blobs": []},
+        "ready": {"capture": True},
+        "unit": {"capture": True},
+    }
+    assert capture_target(obs) == (10, 20)
+    obs = {
+        "overlay": {"train_blobs": [{"x": 3, "y": 4}], "do_it_blobs": []},
+        "ready": {"train": True},
+        "unit": {"train": True},
+    }
+    assert recruit_target(obs) == (3, 4)
+
+
+def test_mcp_lists_local_tools():
+    names = [t["name"] for t in TOOLS]
+    for n in (
+        "local_observe",
+        "local_select_unit",
+        "local_move_to",
+        "local_capture",
+        "local_recruit",
+        "local_end_turn",
+        "local_step",
+    ):
+        assert n in names, n
+    listed = handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert listed["result"]["tools"][0]["name"].startswith("local_")
+
+
 def test_plan_priorities():
+    coords.reset()
     coords.set_frame(1920, 1200)
     base_overlay = {
         "back_lit": False,
@@ -111,6 +182,9 @@ def test_plan_priorities():
         "clear_forest": False,
         "train": False,
         "settings": False,
+        "capture": False,
+        "capture_soon": False,
+        "village": False,
     }
 
     obs = {
@@ -132,6 +206,16 @@ def test_plan_priorities():
         "fruit": [],
     }
     assert plan(obs)["name"] == "confirm_harvest"
+
+    obs = {
+        "hud": {"stars": 8, "turn": 9},
+        "unit": {**unit_idle, "capture": True},
+        "overlay": {**base_overlay, "do_it_pixel": True, "do_it_blobs": [{"x": 1, "y": 2}]},
+        "confirm_ready": True,
+        "move_marks": [],
+        "fruit": [],
+    }
+    assert plan(obs)["name"] == "capture"
 
     obs = {
         "hud": {"stars": 8, "turn": 9},
@@ -189,7 +273,10 @@ if __name__ == "__main__":
     test_parse_unit()
     test_water_vs_move()
     test_find_move_marks_ignores_water()
-    test_scale_1280x800()
+    test_empirical_end_turn_1280()
     test_find_move_marks_1280()
+    test_entities_on_synthetic_map()
+    test_capture_and_recruit_targets()
+    test_mcp_lists_local_tools()
     test_plan_priorities()
     print("ok")

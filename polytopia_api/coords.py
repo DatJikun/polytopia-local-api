@@ -1,17 +1,21 @@
-"""UI coordinates in 1920×1200 design space, scaled to the live frame.
+"""UI coordinates: empirical screen points beat naive 1920→frame scale.
 
-Clicks and OCR crops were measured on a 1920×1200 Cloud Agent display.
-1280×800 is the same 16:10 aspect (scale 2/3). Any other framebuffer is
-mapped independently on X and Y.
+Clicks on the Cloud Agent were measured in 1920×1200 *design* space. Unity's
+dock does **not** land on 2/3 of those numbers at 1280×800 — End Turn is
+(765, 746), not the scaled (741, 753). Named dock buttons therefore:
 
-Call ``set_frame(w, h)`` from the screenshot / window size before clicking.
-``DO_IT`` / ``END_TURN`` / crops then return **screen** pixels.
+1. Exact-frame **empirical** override (builtin or calibrated), else
+2. Scaled design-space fallback.
 
-Escape opens Settings — never send it. Close overlays with BACK.
+Map hits from ``/observe`` are always live-frame pixels. Escape opens
+Settings — never send it. Close overlays with BACK.
 """
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 BASE_W, BASE_H = 1920, 1200
@@ -34,7 +38,101 @@ _BOX: dict[str, tuple[int, int, int, int]] = {
     "UNIT_CROP": (0, 1000, 760, 1200),
 }
 
+# Screen pixels, keyed by live frame. Never derived from 2/3 scale.
+_BUILTIN_EMPIRICAL: dict[tuple[int, int], dict[str, tuple[int, int]]] = {
+    (1280, 800): {
+        "END_TURN": (765, 746),
+    },
+}
+
 _frame_w, _frame_h = BASE_W, BASE_H
+# runtime overrides: (w, h) -> {name: (x, y)}
+_empirical: dict[tuple[int, int], dict[str, tuple[int, int]]] = {}
+_loaded_file: Path | None = None
+
+
+def layout_file() -> Path:
+    env = os.environ.get("POLYTOPIA_LAYOUT", "").strip()
+    if env:
+        return Path(env).expanduser()
+    xdg = Path.home() / ".config" / "polytopia-local-api" / "layout.json"
+    cwd = Path.cwd() / "layout.json"
+    if cwd.is_file():
+        return cwd
+    return xdg
+
+
+def _merge_builtin() -> None:
+    for frame, pts in _BUILTIN_EMPIRICAL.items():
+        slot = _empirical.setdefault(frame, {})
+        for name, xy_ in pts.items():
+            slot.setdefault(name, xy_)
+
+
+def load_empirical(path: Path | None = None) -> Path | None:
+    """Load calibrated screen points. Missing file is fine."""
+    global _loaded_file
+    _merge_builtin()
+    p = path or layout_file()
+    if not p.is_file():
+        _loaded_file = None
+        return None
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _loaded_file = None
+        return None
+    frames = raw.get("frames") if isinstance(raw, dict) else None
+    if not isinstance(frames, dict):
+        frames = raw if isinstance(raw, dict) else {}
+    for key, pts in frames.items():
+        if key in {"design", "comment", "frames"}:
+            continue
+        if not isinstance(pts, dict):
+            continue
+        if "x" in str(key):
+            try:
+                a, b = str(key).lower().split("x", 1)
+                frame = (int(a), int(b))
+            except ValueError:
+                continue
+        else:
+            continue
+        slot = _empirical.setdefault(frame, {})
+        for name, val in pts.items():
+            if isinstance(val, (list, tuple)) and len(val) >= 2:
+                slot[str(name)] = (int(val[0]), int(val[1]))
+    _loaded_file = p
+    return p
+
+
+def save_empirical(path: Path | None = None) -> Path:
+    p = path or layout_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    frames: dict[str, dict[str, list[int]]] = {}
+    for (w, h), pts in sorted(_empirical.items()):
+        frames[f"{w}x{h}"] = {n: [int(x), int(y)] for n, (x, y) in sorted(pts.items())}
+    payload = {
+        "comment": "Screen-pixel empirical overrides. Not scaled from 1920×1200.",
+        "design": [BASE_W, BASE_H],
+        "frames": frames,
+    }
+    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return p
+
+
+def reset(clear_file_overrides: bool = True) -> None:
+    """Restore builtin empiria. Tests call this."""
+    global _empirical, _loaded_file, _frame_w, _frame_h
+    _empirical = {}
+    _loaded_file = None
+    _frame_w, _frame_h = BASE_W, BASE_H
+    _merge_builtin()
+    if not clear_file_overrides:
+        load_empirical()
+
+
+_merge_builtin()
 
 
 def set_frame(w: int, h: int) -> None:
@@ -51,6 +149,7 @@ def scale() -> tuple[float, float]:
 
 
 def xy(x: int | float, y: int | float) -> tuple[int, int]:
+    """Map a 1920×1200 *design* point onto the live frame (naive scale)."""
     sx, sy = scale()
     return int(round(x * sx)), int(round(y * sy))
 
@@ -74,12 +173,49 @@ def clamp_box(b: tuple[int, int, int, int], w: int, h: int) -> tuple[int, int, i
     return x0, y0, x1, y1
 
 
+def _slot() -> dict[str, tuple[int, int]]:
+    return _empirical.get((_frame_w, _frame_h), {})
+
+
+def source_of(name: str) -> str:
+    return "empirical" if name in _slot() else "scaled"
+
+
+def point(name: str) -> tuple[int, int]:
+    emp = _slot().get(name)
+    if emp is not None:
+        return int(emp[0]), int(emp[1])
+    if name not in _P:
+        raise KeyError(name)
+    return xy(*_P[name])
+
+
+def set_empirical(name: str, x: int, y: int, w: int | None = None, h: int | None = None) -> dict[str, Any]:
+    """Record a live-frame click. Persists after save_empirical()."""
+    fw = int(w or _frame_w)
+    fh = int(h or _frame_h)
+    slot = _empirical.setdefault((fw, fh), {})
+    slot[str(name)] = (int(x), int(y))
+    return {"name": name, "x": int(x), "y": int(y), "frame": [fw, fh], "source": "empirical"}
+
+
+def crop_box(name: str) -> tuple[int, int, int, int]:
+    """HUD / unit panel. Fractions of the live frame, not 2/3 of 1920."""
+    w, h = _frame_w, _frame_h
+    if name == "HUD_CROP":
+        # Top-center strip; generous so digit OCR still sees ★ / turn.
+        return int(w * 0.28), 0, int(w * 0.72), max(36, int(h * 0.09))
+    if name == "UNIT_CROP":
+        return 0, int(h * 0.80), int(w * 0.48), h
+    return box(*_BOX[name])
+
+
 class _Pt:
     def __init__(self, name: str) -> None:
         self.name = name
 
     def pair(self) -> tuple[int, int]:
-        return xy(*_P[self.name])
+        return point(self.name)
 
     def __iter__(self):
         return iter(self.pair())
@@ -91,7 +227,7 @@ class _Pt:
         return 2
 
     def __repr__(self) -> str:
-        return f"{self.name}{self.pair()}"
+        return f"{self.name}{self.pair()}/{source_of(self.name)}"
 
 
 class _Box:
@@ -99,7 +235,7 @@ class _Box:
         self.name = name
 
     def tuple(self) -> tuple[int, int, int, int]:
-        return box(*_BOX[self.name])
+        return crop_box(self.name)
 
     def __iter__(self):
         return iter(self.tuple())
@@ -130,10 +266,17 @@ UNIT_CROP = _Box("UNIT_CROP")
 
 def layout_info() -> dict[str, Any]:
     sx, sy = scale()
+    sources = {name: source_of(name) for name in _P}
+    screen = {name: list(point(name)) for name in _P}
+    n_emp = sum(1 for s in sources.values() if s == "empirical")
     return {
         "design": [BASE_W, BASE_H],
         "frame": [_frame_w, _frame_h],
         "scale": [round(sx, 4), round(sy, 4)],
-        "screen": {name: list(xy(*pt)) for name, pt in _P.items()},
-        "crops": {name: list(box(*b)) for name, b in _BOX.items()},
+        "scale_note": "fallback only — dock buttons prefer empirical screen pixels",
+        "empirical": n_emp > 0,
+        "source": sources,
+        "screen": screen,
+        "crops": {name: list(crop_box(name)) for name in _BOX},
+        "layout_file": str(_loaded_file) if _loaded_file else None,
     }

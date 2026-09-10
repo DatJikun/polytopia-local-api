@@ -1,69 +1,63 @@
 # Polytopia local API
 
-Nieoficjalna nakładka na okno **The Battle of Polytopia** (Unity): screenshot + OCR HUD + detekcja pikseli + `xdotool`. To **nie** jest API Hello Games i nie gada z ich serwerami.
+Nieoficjalna nakładka na okno **The Battle of Polytopia** (Unity): screenshot + OCR HUD + detekcja pikseli + `xdotool`. To **nie** jest API Hello Games.
 
-## Wymagania
+Mózg zostaje w `think_turn`. Ten driver daje **stan mapy + komendy** (szybciej niż computerUse). `POST /step` jest tylko fallbackiem playbooka.
 
-- Linux + X11 (`DISPLAY`, np. `:1`)
-- `python3`, `numpy`, `Pillow`
-- `ffmpeg`, `tesseract`, `xdotool`
-- Gra może być **dowolny fullscreen** — koordy są w przestrzeni 1920×1200 i skalują się do okna. **1280×800** to ten sam 16:10 (mnożnik 2/3). Nadpis: `POLYTOPIA_SCREEN=1280x800`.
+## Dock: empiria, nie 2/3
+
+Koordy playbooka są z 1920×1200. Naiwne `× 2/3` na **1280×800 psuje End Turn**. Źródło prawdy to klik zmierzony na Twoim pulpicie:
+
+| przycisk | 1920×1200 (design) | 1280×800 |
+|---|---|---|
+| End Turn | 1111, 1130 | **765, 746** (empiria) |
+
+`GET /health` → `layout.source.END_TURN: "empirical"` i `layout.screen.END_TURN: [765, 746]`. Reszta bez pomiaru leci ze skali (oznaczone `"scaled"`).
+
+```bash
+# dopisz kolejny punkt, gdy coś mija
+curl -s -X POST http://127.0.0.1:8765/calibrate \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"DO_IT","x":740,"y":450}'
+```
+
+Zapis: `layout.json` w cwd albo `~/.config/polytopia-local-api/layout.json` (`POLYTOPIA_LAYOUT=`). `POLYTOPIA_TRIBE=bardur` (domyślnie) rozróżnia własne/wrogie miasta.
+
+## Start
 
 ```bash
 python3 -m polytopia_api.server   # http://127.0.0.1:8765
+python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 ```
 
-`GET /health` zwraca `layout.frame`, `layout.scale` i przeliczone przyciski (`end_turn`, `do_it`, …).
+`POST /click` i komendy mapy biorą **piksele okna** (`space=screen`). 1920×1200 tylko z `"space":"design"`.
 
-`POST /click` domyślnie bierze koordy **design** (1920×1200), tak jak playbook:
+## MCP `local_*` (zamiast curl)
 
-```bash
-curl -s -X POST http://127.0.0.1:8765/click \
-  -H 'Content-Type: application/json' \
-  -d '{"x":1111,"y":1130}'
-```
+Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json` w klonie. Connector gada z `:8765`, więc **serwer HTTP musi działać**.
 
-Pola z `/observe` (`move_marks`, `fruit`, bloby overlay) są już w pikselach okna (`hits_space: "screen"`). `think_turn` klika je tak:
+| tool | HTTP |
+|---|---|
+| `local_health` | `GET /health` |
+| `local_observe` | `GET /observe` |
+| `local_hud` | `GET /hud` |
+| `local_select_unit` | `POST /select-unit` `{"id":"u0"}` albo `{"x","y"}` |
+| `local_move_to` | `POST /move-to` `{"x","y"}` opcjonalnie `from_id` / `from_x,from_y` |
+| `local_capture` | `POST /capture` |
+| `local_recruit` | `POST /recruit` `{"id":"c0"}` — radial jednostek nadal na mapie |
+| `local_end_turn` | `POST /end-turn` |
+| `local_click` / `local_back` / `local_confirm` / `local_calibrate` | jak nazwa |
+| `local_step` | playbook fallback |
 
-```bash
-curl -s -X POST http://127.0.0.1:8765/click \
-  -H 'Content-Type: application/json' \
-  -d '{"x":828,"y":400,"space":"screen"}'
-```
+`GET /observe` (screen pixels, `hits_space: "screen"`):
 
-Bez `"space":"screen"` serwer potraktuje liczby jako 1920×1200 i przeskaluje jeszcze raz.
+- `units[]` — HP-bar, `id` `u0`…
+- `cities` / `cities_own` / `cities_enemy` — nameplate + kolor plemienia
+- `villages[]`
+- `ready.capture` / `ready.train` / `ready.move` / `ready.harvest`
+- HUD (`turn` / `stars` / `score`) — crop + whitelist cyfr; jak OCR skłamie, patrz `hud.raw` / `hud.digits`
 
-## Endpointy
-
-| Metoda | Ścieżka | Co robi |
-|---|---|---|
-| GET | `/health` | czy okno gry żyje |
-| GET | `/hud` | tura, ★, dochód, score |
-| GET | `/observe` | HUD + panel jednostki + pola ruchu + owoce + overlay |
-| GET | `/screenshot` | PNG |
-| POST | `/plan` | ta sama obserwacja, **bez** kliknięcia |
-| POST | `/step` | jedna akcja playbooka, potem znowu HUD |
-| POST | `/play` | `{"n":5}` — kilka kroków, stop na End Turn |
-| POST | `/click` | `{"x":1111,"y":1130}` |
-| POST | `/confirm` | DO IT / TRAIN |
-| POST | `/end-turn` | podwójny klik |
-| POST | `/back` | wyjście z Settings/tech (nie Escape) |
-
-```bash
-curl -s http://127.0.0.1:8765/observe
-curl -s -X POST http://127.0.0.1:8765/step
-```
-
-## Playbook `POST /step`
-
-1. Zamknij Settings / odrzuć Clear Forest  
-2. Potwierdź harvest/train, jeśli modal już wisi  
-3. Ruch tylko po wykrytych **niebieskich polach** (nie woda)  
-4. Żniwa owoców przy ≥2★  
-5. Odklik jednostki bez akcji  
-6. End Turn; **blokada przy ≥20★**
-
-Escape jest zablokowane (otwiera Settings).
+Detekcja mapy jest heurystyką z pikseli, nie native state.
 
 ## Testy
 

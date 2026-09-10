@@ -63,6 +63,27 @@ def _cluster(ys: np.ndarray, xs: np.ndarray, radius: int = 28, min_size: int = 8
     return out
 
 
+def merge_clusters(clusters: list[tuple[int, int, int]], dist: int) -> list[tuple[int, int, int]]:
+    """Collapse greedy fragments from one blob into a single hit."""
+    out: list[tuple[int, int, int]] = []
+    for n, cx, cy in clusters:
+        hit = False
+        for i, (n2, x2, y2) in enumerate(out):
+            if (cx - x2) ** 2 + (cy - y2) ** 2 <= dist * dist:
+                tot = n + n2
+                out[i] = (
+                    tot,
+                    int(round((cx * n + x2 * n2) / tot)),
+                    int(round((cy * n + y2 * n2) / tot)),
+                )
+                hit = True
+                break
+        if not hit:
+            out.append((n, cx, cy))
+    out.sort(reverse=True)
+    return out
+
+
 def _frame_xy(arr: np.ndarray, x: int, y: int) -> tuple[int, int]:
     h, w = arr.shape[:2]
     return (
@@ -227,6 +248,8 @@ def overlay_flags(arr: np.ndarray) -> dict[str, Any]:
     br, bg, bb = back_px
     # In-game corner is black; overlays draw a white back circle
     back_lit = br + bg + bb >= 400
+    blobs = find_doit_buttons(arr)
+    train_blobs = find_train_buttons(arr)
     return {
         "do_it_pixel": doit,
         "train_pixel": train,
@@ -234,8 +257,9 @@ def overlay_flags(arr: np.ndarray) -> dict[str, Any]:
         "do_it_rgb": doit_px,
         "train_rgb": train_px,
         "back_rgb": back_px,
-        "do_it_blobs": find_doit_buttons(arr),
-        "train_blobs": find_train_buttons(arr),
+        "do_it_blobs": blobs,
+        "capture_blobs": blobs,
+        "train_blobs": train_blobs,
     }
 
 
