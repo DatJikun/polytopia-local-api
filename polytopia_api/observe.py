@@ -10,6 +10,7 @@ from . import coords
 from . import detect
 from . import driver
 from . import entities
+from . import snapshot
 
 _LAST: dict[str, Any] | None = None
 
@@ -32,6 +33,41 @@ def _ids(prefix: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for i, it in enumerate(items):
         d = dict(it)
         d.setdefault("id", f"{prefix}{i}")
+        out.append(d)
+    return out
+
+
+def stabilize(
+    items: list[dict[str, Any]],
+    prev: list[dict[str, Any]] | None,
+    max_dist: int = 56,
+) -> list[dict[str, Any]]:
+    """Keep city/unit ids stable across frames when the blob barely moved."""
+    if not items:
+        return []
+    used: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for it in items:
+        d = dict(it)
+        best = None
+        best_d = max_dist
+        for p in prev or []:
+            pid = str(p.get("id") or "")
+            if not pid or pid in used:
+                continue
+            try:
+                dist = (int(d["x"]) - int(p["x"])) ** 2 + (int(d["y"]) - int(p["y"])) ** 2
+            except (KeyError, TypeError, ValueError):
+                continue
+            if dist < best_d * best_d:
+                best_d = int(dist ** 0.5)
+                best = p
+        if best and best.get("id"):
+            d["id"] = best["id"]
+            d["stable"] = True
+            used.add(str(best["id"]))
+        else:
+            d["stable"] = False
         out.append(d)
     return out
 
@@ -69,6 +105,11 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
     overlay = pix["overlay"]
     arr = detect.as_rgb(im)
     mapped = entities.observe_map(arr)
+    prev = _LAST
+    units = stabilize(_ids("u", mapped["units"]), (prev or {}).get("units"))
+    cities = stabilize(_ids("c", mapped["cities"]), (prev or {}).get("cities"))
+    own = [c for c in cities if c.get("owner") == "own"]
+    enemy = [c for c in cities if c.get("owner") == "enemy"]
     confirm_ready = bool(
         overlay["do_it_pixel"]
         or overlay["train_pixel"]
@@ -81,11 +122,13 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
     payload = {
         "hud": hud,
         "unit": unit,
-        "units": mapped["units"],
-        "cities": mapped["cities"],
-        "cities_own": mapped["cities_own"],
-        "cities_enemy": mapped["cities_enemy"],
+        "units": units,
+        "cities": cities,
+        "cities_own": own,
+        "cities_enemy": enemy,
         "villages": mapped["villages"],
+        "villages_enabled": mapped.get("villages_enabled", False),
+        "fog_edge": mapped.get("fog_edge") or [],
         "own_tribe": mapped["own_tribe"],
         "move_marks": _ids("m", pix["move_marks"]),
         "fruit": _ids("f", pix["fruit"]),
@@ -100,5 +143,7 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         "layout": coords.layout_info(),
         "screenshot": str(path),
     }
+    payload["observe_diff"] = snapshot.diff(prev, payload, reason="frame") if prev else None
+    payload["turn_diff"] = snapshot.diff(snapshot.last_saved(), payload, reason="observe")
     _LAST = payload
     return payload

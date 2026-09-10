@@ -29,7 +29,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_observe",
-        "description": "Screenshot observe: HUD, units/cities/villages (screen pixels), Capture/Train ready, move marks.",
+        "description": "Screenshot observe: HUD (turn/stars/score, stale if cached), stable units/cities with tribe color, fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -39,20 +39,21 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_select_unit",
-        "description": "Click a unit/city/village. Pass screen x,y from observe, or id (u0, c0, v0).",
+        "description": "Click a unit/city. Pass screen x,y from observe, or id/city_id (u0, c0).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
                 "id": {"type": "string"},
+                "city_id": {"type": "string"},
                 "space": {"type": "string", "description": "screen (default) or design"},
             },
         },
     },
     {
         "name": "local_move_to",
-        "description": "Click a map destination (not blob-gated). Optional from_x/from_y or from_id to select first.",
+        "description": "Move to a map point or city_id from observe. Optional from_id to select first. Prefer city_id over computerUse.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -61,25 +62,33 @@ TOOLS: list[dict[str, Any]] = [
                 "from_x": {"type": "integer"},
                 "from_y": {"type": "integer"},
                 "from_id": {"type": "string"},
+                "city_id": {"type": "string"},
+                "to_id": {"type": "string"},
                 "space": {"type": "string"},
             },
-            "required": ["x", "y"],
         },
     },
     {
         "name": "local_capture",
-        "description": "Press Capture if the selected village/city is ready.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "Press Capture. Pass city_id to stand-select that city first.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "city_id": {"type": "string"},
+                "space": {"type": "string"},
+            },
+        },
     },
     {
         "name": "local_recruit",
-        "description": "Open a city (x,y or id) and click TRAIN. Radial unit portraits still need a map click.",
+        "description": "Open a city (city_id) and click TRAIN. Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
                 "id": {"type": "string"},
+                "city_id": {"type": "string"},
                 "unit": {"type": "string"},
                 "space": {"type": "string"},
             },
@@ -87,21 +96,41 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_end_turn",
-        "description": "Double-click empirical End Turn (1280×800: 765,746).",
+        "description": "End Turn, then save turn_snapshot/T{n}.json+.png and return structured diff + alerts (turn_jump, stars_income_without_turn).",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "local_click",
-        "description": "Raw click. Default space=screen (empirical / observe pixels).",
+        "description": "Click by name (TECH_TREE, SETTINGS, GAME_STATS) or x,y. Named Tech refuses if it sits on End Turn (T18→T22).",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "name": {"type": "string", "description": "TECH_TREE / SETTINGS / GAME_STATS / END_TURN"},
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
                 "repeats": {"type": "integer"},
                 "space": {"type": "string"},
             },
-            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "local_tech",
+        "description": "Click TECH_TREE by name (not an offset next to End Turn).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "local_diff",
+        "description": "Last structured turn/frame diff (turn/stars, units moved, cities own/enemy, fog_edge, alerts).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "local_snapshot",
+        "description": "Save observe JSON+PNG under turn_snapshot/ without ending the turn.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string"},
+            },
         },
     },
     {
@@ -138,6 +167,7 @@ _GET = {
     "local_health": "/health",
     "local_observe": "/observe",
     "local_hud": "/hud",
+    "local_diff": "/diff",
 }
 _POST = {
     "local_select_unit": "/select-unit",
@@ -146,6 +176,8 @@ _POST = {
     "local_recruit": "/recruit",
     "local_end_turn": "/end-turn",
     "local_click": "/click",
+    "local_tech": "/tech",
+    "local_snapshot": "/snapshot",
     "local_back": "/back",
     "local_confirm": "/confirm",
     "local_calibrate": "/calibrate",

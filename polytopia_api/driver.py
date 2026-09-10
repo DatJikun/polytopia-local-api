@@ -367,6 +367,35 @@ def end_turn() -> dict[str, Any]:
     return click(*coords.END_TURN, repeats=2, pause=0.1)
 
 
+def click_named(name: str, repeats: int = 1) -> dict[str, Any]:
+    """Click a layout button by name. Refuses Tech/Settings if they sit on End Turn."""
+    key = str(name or "").strip().upper().replace("-", "_")
+    aliases = {
+        "TECH": "TECH_TREE",
+        "TREE": "TECH_TREE",
+        "STATS": "GAME_STATS",
+        "GAME": "GAME_STATS",
+        "END": "END_TURN",
+        "NEXT": "END_TURN",
+    }
+    key = aliases.get(key, key)
+    info = activate()
+    sync_layout(info)
+    if key not in coords._P:
+        raise PolytopiaError(f"unknown button {name}")
+    pt = coords.point(key)
+    if coords.too_close_to_end_turn(key, pt):
+        end = coords.point("END_TURN")
+        raise PolytopiaError(
+            f"{key} {list(pt)} is too close to END_TURN {list(end)} "
+            f"(<{coords.DOCK_MIN_SEP}px) — calibrate TECH_TREE instead of clicking"
+        )
+    result = click(pt[0], pt[1], space="screen", repeats=repeats)
+    result["name"] = key
+    result["source"] = coords.source_of(key)
+    return result
+
+
 def confirm() -> dict[str, Any]:
     """Click the blue DO IT / confirm button if it is present."""
     shot = screenshot()
@@ -452,13 +481,29 @@ def _first_plausible(nums: list[int], lo: int, hi: int) -> int | None:
     return None
 
 
+_HUD_CACHE: dict[str, Any] | None = None
+
+
+def _hud_star_x(crop: Image.Image) -> int | None:
+    """Gold star icon in the HUD — splits score | ★ | turn."""
+    arr = __import__("numpy").asarray(crop.convert("RGB")).astype("int16")
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    star = (r >= 190) & (g >= 140) & (b <= 110) & (r + g >= 360) & (r >= b + 80)
+    ys, xs = __import__("numpy").where(star)
+    if xs.size < 8:
+        return None
+    return int(xs.mean())
+
+
 def read_hud(im: Image.Image) -> dict[str, Any]:
-    """OCR the top strip in pieces: score | ★ | turn, digit-whitelist on slices."""
+    """OCR the top strip: score left of the star, ★ then turn to the right."""
+    global _HUD_CACHE
     coords.set_frame(*im.size)
     box = coords.clamp_box(tuple(int(v) for v in coords.HUD_CROP), *im.size)
     crop = im.crop(box)
     candidates: list[tuple[int, dict[str, Any], str, str]] = []
     digits: dict[str, str] = {}
+    star_x = _hud_star_x(crop)
 
     for invert in (True, False):
         prepared = _prep_ocr(crop, scale=3, invert=invert)
@@ -472,11 +517,19 @@ def read_hud(im: Image.Image) -> dict[str, Any]:
     _, parsed, raw_full, raw_line = candidates[0]
 
     w, h = crop.size
-    slices = {
-        "score": (0, 0, max(1, int(w * 0.45)), h),
-        "stars": (int(w * 0.28), 0, max(int(w * 0.28) + 1, int(w * 0.72)), h),
-        "turn": (int(w * 0.58), 0, w, h),
-    }
+    if star_x is not None:
+        sx = max(8, min(w - 8, star_x))
+        slices = {
+            "score": (0, 0, max(1, sx - 4), h),
+            "stars": (sx, 0, min(w, sx + max(28, w // 6)), h),
+            "turn": (min(w - 1, sx + max(24, w // 7)), 0, w, h),
+        }
+    else:
+        slices = {
+            "score": (0, 0, max(1, int(w * 0.45)), h),
+            "stars": (int(w * 0.28), 0, max(int(w * 0.28) + 1, int(w * 0.72)), h),
+            "turn": (int(w * 0.58), 0, w, h),
+        }
     for key, sl in slices.items():
         sub = _prep_ocr(crop.crop(sl), scale=4, invert=True)
         txt = ocr_image(
@@ -495,10 +548,24 @@ def read_hud(im: Image.Image) -> dict[str, Any]:
         elif key == "turn" and parsed.get("turn") is None:
             parsed["turn"] = _first_plausible(nums, 0, 200)
 
+    missing = [k for k in ("score", "stars", "turn") if parsed.get(k) is None]
+    parsed["missing"] = missing
+    parsed["stale"] = False
+    parsed["stale_fields"] = []
+    if missing and _HUD_CACHE:
+        for k in missing:
+            if _HUD_CACHE.get(k) is not None:
+                parsed[k] = _HUD_CACHE[k]
+                parsed["stale"] = True
+                parsed["stale_fields"].append(k)
+    if _filled(parsed) >= 2:
+        _HUD_CACHE = {k: parsed.get(k) for k in ("score", "stars", "turn", "income")}
+
     parsed["raw"] = raw_full
     parsed["raw_line"] = raw_line
     parsed["digits"] = digits
     parsed["hud_crop"] = list(box)
+    parsed["star_x"] = star_x
     return parsed
 
 

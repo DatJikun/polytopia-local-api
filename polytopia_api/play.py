@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from . import commands
 from . import coords
 from . import driver
 from .observe import observe
@@ -138,8 +139,10 @@ def _execute(name: str, planned: dict[str, Any], before: dict[str, Any]) -> dict
     if name == "blocked_end_turn":
         return _result(before, action)
     if name == "end_turn":
-        driver.end_turn()
-        time.sleep(1.0)
+        result = commands.end_turn()
+        for key in ("diff", "snapshot", "alerts", "hud"):
+            if key in result:
+                action[key] = result[key]
         return _result(before, action)
     action["ok"] = False
     action["reason"] = f"unknown action {name}"

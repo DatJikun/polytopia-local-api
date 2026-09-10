@@ -2,29 +2,30 @@
 
 Nieoficjalna nakładka na okno **The Battle of Polytopia** (Unity): screenshot + OCR HUD + detekcja pikseli + `xdotool`. To **nie** jest API Hello Games.
 
-Mózg zostaje w `think_turn`. Ten driver daje **stan mapy + komendy** (szybciej niż computerUse). `POST /step` jest tylko fallbackiem playbooka.
+Mózg zostaje w `think_turn`. Ten driver daje **stan mapy + komendy**. Diff tura→tura (`turn_snapshot/`) to **warstwa kontroli**, nie zamiennik API. `POST /step` jest tylko fallbackiem playbooka.
 
 ## Dock: empiria, nie 2/3
 
-Koordy playbooka są z 1920×1200. Naiwne `× 2/3` na **1280×800 psuje End Turn**. Źródło prawdy to klik zmierzony na Twoim pulpicie:
+Koordy playbooka są z 1920×1200. Naiwne `× 2/3` na **1280×800 psuje End Turn**. Źródło prawdy to klik zmierzony na pulpicie:
 
 | przycisk | 1920×1200 (design) | 1280×800 |
 |---|---|---|
 | End Turn | 1111, 1130 | **765, 746** (empiria) |
-| Settings / Tech / Stats | rząd docku | **przybite do End Turn** (nie `×2/3` od (0,0)) |
+| Settings / Stats / Tech | rząd docku | **przybite do End Turn** z bezpieczną przerwą |
 
-`GET /health` → `layout.source.END_TURN: "empirical"` i `layout.screen.END_TURN: [765, 746]`. `find_window` bierze tylko proces, którego **argv0 kończy się na `Polytopia.x86_64`**, plus okno o nazwie/klasie dokładnie `Polytopia` — nie wrapper Steama i nie Chrome `polytopia.local`.
+Tech **nie** jest offsetem ~19 px od End Turn (po skalowaniu ~13 px). To był skok **T18→T22**: klik w Tech lądował na End Turn. `POST /click {"name":"TECH_TREE"}` odmawia, gdy punkt jest `< 64` px od End Turn. `GET /health` → `layout.tech_end_dist` i `layout.tech_too_close`.
+
+`find_window` bierze tylko proces, którego **argv0 kończy się na `Polytopia.x86_64`**, plus okno o nazwie/klasie dokładnie `Polytopia` — nie wrapper Steama i nie Chrome `polytopia.local`.
 
 Ścieżki: `/select_unit` = `/select-unit` (to samo dla `end_turn` / `move_to`).
 
 ```bash
-# dopisz kolejny punkt, gdy coś mija
 curl -s -X POST http://127.0.0.1:8765/calibrate \
   -H 'Content-Type: application/json' \
-  -d '{"name":"DO_IT","x":740,"y":450}'
+  -d '{"name":"TECH_TREE","x":677,"y":738}'
 ```
 
-Zapis: `layout.json` w cwd albo `~/.config/polytopia-local-api/layout.json` (`POLYTOPIA_LAYOUT=`). `POLYTOPIA_TRIBE=bardur` (domyślnie) rozróżnia własne/wrogie miasta.
+Zapis: `layout.json` w cwd albo `~/.config/polytopia-local-api/layout.json` (`POLYTOPIA_LAYOUT=`). `POLYTOPIA_TRIBE=bardur` (domyślnie) rozróżnia własne/wrogie miasta. Wioski są **wyłączone** (fałszywe huty na ziemi); włącz `POLYTOPIA_VILLAGES=1`.
 
 ## Start
 
@@ -35,6 +36,25 @@ python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 
 `POST /click` i komendy mapy biorą **piksele okna** (`space=screen`). 1920×1200 tylko z `"space":"design"`.
 
+## Kontrakt dla think_turn
+
+1. `GET /health` — okno + `layout.screen.END_TURN [765,746]`; Tech ≥64 px od End Turn (`tech_too_close: false`).
+2. `POST /click {"name":"TECH_TREE"}` (albo `POST /tech`) — nigdy offset obok End Turn.
+3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnymi id** i kolorem plemienia; `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr (`stale` / `missing` gdy cache). `turn_diff.alerts`.
+4. Mapa bez computerUse: `POST /move-to {"from_id":"u0","city_id":"c1"}`, `POST /capture {"city_id":"c1"}`, `POST /recruit {"city_id":"c0"}`.
+5. `POST /end-turn` — zapis `turn_snapshot/T{n}.json` + `.png` i structured `diff`.
+
+## Diff tura→tura (kontrola)
+
+Na End Turn (albo `POST /snapshot`):
+
+- JSON + PNG w `turn_snapshot/` (`POLYTOPIA_SNAPSHOTS=`).
+- Diff: turn/stars, lista unitów (pozycje), miasta own/enemy, fog edge.
+- Alert `turn_jump` gdy tura skacze o **>1**.
+- Alert `stars_income_without_turn` gdy ★ rosną o income przy `turn_delta==0`.
+
+`GET /diff` / `local_diff` zwraca ostatni structured diff. PNG jest do weryfikacji ludzkiej; bot czyta JSON.
+
 ## MCP `local_*` (zamiast curl)
 
 Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json` w klonie. Connector gada z `:8765`, więc **serwer HTTP musi działać**.
@@ -44,21 +64,26 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 | `local_health` | `GET /health` |
 | `local_observe` | `GET /observe` |
 | `local_hud` | `GET /hud` |
-| `local_select_unit` | `POST /select-unit` `{"id":"u0"}` albo `{"x","y"}` |
-| `local_move_to` | `POST /move-to` `{"x","y"}` opcjonalnie `from_id` / `from_x,from_y` |
-| `local_capture` | `POST /capture` |
-| `local_recruit` | `POST /recruit` `{"id":"c0"}` — radial jednostek nadal na mapie |
-| `local_end_turn` | `POST /end-turn` |
-| `local_click` / `local_back` / `local_confirm` / `local_calibrate` | jak nazwa |
+| `local_select_unit` | `POST /select-unit` `{"id":"u0"}` / `{"city_id":"c0"}` / `{"x","y"}` |
+| `local_move_to` | `POST /move-to` `{"city_id":"c1"}` albo `{"x","y"}`, opcjonalnie `from_id` |
+| `local_capture` | `POST /capture` `{"city_id":"c1"}` |
+| `local_recruit` | `POST /recruit` `{"city_id":"c0"}` — radial jednostek nadal na mapie |
+| `local_end_turn` | `POST /end-turn` (snapshot + diff) |
+| `local_click` | `POST /click` `{"name":"TECH_TREE"}` albo `{"x","y"}` |
+| `local_tech` | `POST /tech` |
+| `local_diff` | `GET /diff` |
+| `local_snapshot` | `POST /snapshot` |
+| `local_back` / `local_confirm` / `local_calibrate` | jak nazwa |
 | `local_step` | playbook fallback |
 
 `GET /observe` (screen pixels, `hits_space: "screen"`):
 
-- `units[]` — HP-bar, `id` `u0`…
-- `cities` / `cities_own` / `cities_enemy` — nameplate + kolor plemienia
-- `villages[]`
+- `units[]` — HP-bar, `id` `u0`…, `tribe` / `owner`
+- `cities` / `cities_own` / `cities_enemy` — nameplate + kolor plemienia (id trzymają się klatek, gdy blob ruszy <56 px)
+- `villages[]` — puste, chyba że `POLYTOPIA_VILLAGES=1`
+- `fog_edge[]`
 - `ready.capture` / `ready.train` / `ready.move` / `ready.harvest`
-- HUD (`turn` / `stars` / `score`) — crop + whitelist cyfr; jak OCR skłamie, patrz `hud.raw` / `hud.digits`
+- HUD: crop + whitelist cyfr, split wokół złotej gwiazdy; jak OCR skłamie, `hud.stale` / `hud.missing` / `hud.raw` / `hud.digits`
 
 Detekcja mapy jest heurystyką z pikseli, nie native state.
 

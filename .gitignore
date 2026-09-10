@@ -10,3 +10,5 @@ venv/
 uploads/
 assets/
 *.pdf
+turn_snapshot/
+turn_logs/

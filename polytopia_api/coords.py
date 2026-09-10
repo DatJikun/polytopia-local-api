@@ -39,27 +39,43 @@ _BOX: dict[str, tuple[int, int, int, int]] = {
 }
 
 # Screen pixels, keyed by live frame. Never derived from 2/3 scale.
+# TECH must NOT be an offset ~19px from End Turn — that click ended the turn (T18→T22).
 _DESIGN_END = _P["END_TURN"]
 _DOCK = ("SETTINGS", "GAME_STATS", "TECH_TREE", "END_TURN")
+# Unscaled 1920 gaps from End Turn, but Tech gets a full button width (≥80px).
+_DOCK_DELTA = {
+    "SETTINGS": (-231, -8),
+    "GAME_STATS": (-140, -8),
+    "TECH_TREE": (-88, -8),
+}
+DOCK_MIN_SEP = 64
 
 
-def dock_from_end(end: tuple[int, int]) -> dict[str, tuple[int, int]]:
-    """Pin Settings / Tech / Stats to a measured End Turn instead of origin-scale."""
+def dock_buttons(end: tuple[int, int]) -> dict[str, tuple[int, int]]:
+    """Named dock buttons pinned to measured End Turn, with a safe Tech gap."""
     ex, ey = int(end[0]), int(end[1])
-    dx = ex / _DESIGN_END[0]
-    dy = ey / _DESIGN_END[1]
     out: dict[str, tuple[int, int]] = {"END_TURN": (ex, ey)}
-    for name in ("SETTINGS", "GAME_STATS", "TECH_TREE"):
-        ox, oy = _P[name]
-        out[name] = (
-            int(round(ex + (ox - _DESIGN_END[0]) * dx)),
-            int(round(ey + (oy - _DESIGN_END[1]) * dy)),
-        )
+    for name, (dx, dy) in _DOCK_DELTA.items():
+        out[name] = (ex + int(dx), ey + int(dy))
     return out
 
 
+def dock_from_end(end: tuple[int, int]) -> dict[str, tuple[int, int]]:
+    """Back-compat alias."""
+    return dock_buttons(end)
+
+
+def too_close_to_end_turn(name: str, pt: tuple[int, int] | None = None) -> bool:
+    key = str(name or "").strip().upper().replace("-", "_")
+    if key in {"END_TURN", "END", "NEXT"}:
+        return False
+    end = point("END_TURN")
+    x, y = pt if pt is not None else point(key)
+    return (x - end[0]) ** 2 + (y - end[1]) ** 2 < DOCK_MIN_SEP ** 2
+
+
 _BUILTIN_EMPIRICAL: dict[tuple[int, int], dict[str, tuple[int, int]]] = {
-    (1280, 800): dock_from_end((765, 746)),
+    (1280, 800): dock_buttons((765, 746)),
 }
 
 _frame_w, _frame_h = BASE_W, BASE_H
@@ -198,7 +214,7 @@ def source_of(name: str) -> str:
     slot = _slot()
     if name in slot:
         return "empirical"
-    if name in _DOCK and "END_TURN" in slot:
+    if name in _DOCK and name != "END_TURN":
         return "dock"
     return "scaled"
 
@@ -209,8 +225,9 @@ def point(name: str) -> tuple[int, int]:
         return int(emp[0]), int(emp[1])
     if name in _DOCK and name != "END_TURN":
         end = _slot().get("END_TURN")
-        if end is not None:
-            return dock_from_end(end)[name]
+        if end is None:
+            end = xy(*_P["END_TURN"])
+        return dock_buttons(end)[name]
     if name not in _P:
         raise KeyError(name)
     return xy(*_P[name])
@@ -295,6 +312,8 @@ def layout_info() -> dict[str, Any]:
     sources = {name: source_of(name) for name in _P}
     screen = {name: list(point(name)) for name in _P}
     n_emp = sum(1 for s in sources.values() if s == "empirical")
+    tech, end = point("TECH_TREE"), point("END_TURN")
+    tech_end_dist = round(((tech[0] - end[0]) ** 2 + (tech[1] - end[1]) ** 2) ** 0.5, 1)
     return {
         "design": [BASE_W, BASE_H],
         "frame": [_frame_w, _frame_h],
@@ -305,4 +324,7 @@ def layout_info() -> dict[str, Any]:
         "screen": screen,
         "crops": {name: list(crop_box(name)) for name in _BOX},
         "layout_file": str(_loaded_file) if _loaded_file else None,
+        "dock_min_sep": DOCK_MIN_SEP,
+        "tech_end_dist": tech_end_dist,
+        "tech_too_close": too_close_to_end_turn("TECH_TREE", tech),
     }

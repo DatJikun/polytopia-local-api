@@ -21,6 +21,7 @@ if __name__ == "__main__" and __package__ is None:
 from . import commands
 from . import coords
 from . import driver
+from . import snapshot
 from .observe import observe as do_observe
 from .play import plan as do_plan
 from .play import play_n
@@ -35,23 +36,24 @@ ROUTES = {
         "/health",
         "/hud",
         "/observe",
+        "/diff",
         "/pixel",
         "/screenshot",
     ],
     "POST": [
         "/click",
+        "/tech",
+        "/settings",
         "/confirm",
         "/end-turn",
         "/back",
         "/key",
         "/calibrate",
         "/select-unit",
-        "/select_unit",
-        "/move-to",
-        "/end-turn",
         "/move-to",
         "/capture",
         "/recruit",
+        "/snapshot",
         "/step",
         "/plan",
         "/play",
@@ -131,6 +133,9 @@ class Handler(BaseHTTPRequestHandler):
                         "local_recruit",
                         "local_end_turn",
                         "local_click",
+                        "local_tech",
+                        "local_diff",
+                        "local_snapshot",
                         "local_back",
                         "local_confirm",
                         "local_calibrate",
@@ -165,6 +170,9 @@ class Handler(BaseHTTPRequestHandler):
                 r, g, b = driver.pixel(x, y)
                 _json(self, 200, {"x": x, "y": y, "space": space, "rgb": [r, g, b]})
                 return
+            if path == "/diff":
+                _json(self, 200, snapshot.last_diff() or {"ok": False, "reason": "no diff yet"})
+                return
             if path == "/screenshot":
                 shot = driver.screenshot()
                 data = shot.read_bytes()
@@ -188,43 +196,61 @@ class Handler(BaseHTTPRequestHandler):
             body = _read_json(self)
             space = str(body.get("space") or "screen")
             if path == "/click":
+                if body.get("name"):
+                    repeats = int(body.get("repeats") or 1)
+                    _json(self, 200, driver.click_named(str(body["name"]), repeats=repeats))
+                    return
                 x = int(body["x"])
                 y = int(body["y"])
                 repeats = int(body.get("repeats") or 1)
                 _json(self, 200, driver.click(x, y, repeats=repeats, space=space))
                 return
+            if path in {"/tech", "/tech-tree"}:
+                _json(self, 200, driver.click_named("TECH_TREE"))
+                return
+            if path == "/settings":
+                _json(self, 200, driver.click_named("SETTINGS"))
+                return
             if path == "/confirm":
                 _json(self, 200, driver.confirm())
                 return
             if path == "/end-turn":
-                _json(self, 200, driver.end_turn())
+                _json(self, 200, commands.end_turn())
                 return
             if path == "/select-unit":
                 x, y = _xy(body, "x", "y")
                 _json(self, 200, commands.select_unit(
-                    x=x, y=y, id=body.get("id"), space=space,
+                    x=x, y=y, id=body.get("id"),
+                    city_id=body.get("city_id"), space=space,
                 ))
                 return
             if path == "/move-to":
                 x, y = _xy(body, "x", "y")
-                if x is None:
-                    raise KeyError("x")
                 fx, fy = _xy(body, "from_x", "from_y")
                 _json(self, 200, commands.move_to(
                     x=x, y=y, from_x=fx, from_y=fy,
                     from_id=body.get("from_id") or body.get("unit_id"),
+                    city_id=body.get("city_id"),
+                    to_id=body.get("to_id"),
                     space=space,
                 ))
                 return
             if path == "/capture":
-                _json(self, 200, commands.capture())
+                _json(self, 200, commands.capture(
+                    city_id=body.get("city_id"), space=space,
+                ))
                 return
             if path == "/recruit":
                 x, y = _xy(body, "x", "y")
                 _json(self, 200, commands.recruit(
                     x=x, y=y, id=body.get("id"),
+                    city_id=body.get("city_id"),
                     unit=body.get("unit"), space=space,
                 ))
+                return
+            if path == "/snapshot":
+                obs = do_observe()
+                _json(self, 200, snapshot.save(obs, reason=str(body.get("reason") or "manual")))
                 return
             if path == "/calibrate":
                 name = str(body.get("name") or "")

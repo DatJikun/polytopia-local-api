@@ -51,6 +51,33 @@ def _owner_of(tribe: str) -> str:
     return "own" if tribe == own else "enemy"
 
 
+def villages_enabled() -> bool:
+    return os.environ.get("POLYTOPIA_VILLAGES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tuple[str, list[int]]:
+    """Majority tribe in a patch — one water pixel must not become Imperius."""
+    h, w = arr.shape[:2]
+    x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+    y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+    patch = arr[y0:y1, x0:x1]
+    if patch.size == 0:
+        rgb = sample(arr, x, y)
+        return classify_tribe(rgb), rgb
+    votes: dict[str, int] = {}
+    for py in range(patch.shape[0]):
+        for px in range(patch.shape[1]):
+            rgb = [int(v) for v in patch[py, px]]
+            t = classify_tribe(rgb)
+            if t != "unknown":
+                votes[t] = votes.get(t, 0) + 1
+    rgb = sample(arr, x, y)
+    if not votes:
+        return "unknown", rgb
+    tribe = max(votes, key=votes.get)
+    return tribe, rgb
+
+
 def _bbox(xs: np.ndarray, ys: np.ndarray, cx: int, cy: int, radius: int) -> tuple[int, int]:
     if xs.size == 0:
         return 0, 0
@@ -78,7 +105,7 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
         if n > max_n:
             continue
         uy = min(h - 1, cy + drop)
-        rgb = sample(arr, cx, uy)
+        tribe, rgb = sample_patch_tribe(arr, cx, uy, radius=6)
         if is_water_rgb(*rgb):
             continue
         pr, pg, pb = sample(arr, cx, cy)
@@ -96,6 +123,8 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
                 "bar_y": cy,
                 "n": n,
                 "hp": hp,
+                "tribe": tribe,
+                "owner": _owner_of(tribe),
                 "rgb": rgb,
             }
         )
@@ -128,8 +157,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         if bw / bh < 1.7:
             continue
-        rgb = sample(arr, cx, max(0, cy - up))
-        tribe = classify_tribe(rgb)
+        tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up), radius=8)
         if tribe == "unknown":
             continue
         conf = 0.72 if tribe == _own_tribe() else 0.62
@@ -158,7 +186,9 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_villages(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Compact tan huts only. Dirt / mountains / city plates are dropped."""
+    """Off by default — tan dirt was flooding Domination with fake villages."""
+    if not villages_enabled():
+        return []
     y0, y1, x0, x1 = _map_bounds(arr)
     region = arr[y0:y1, x0:x1]
     r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
@@ -215,6 +245,31 @@ def find_villages(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -
     return villages[:4]
 
 
+def find_fog_edge(arr: np.ndarray) -> list[dict[str, Any]]:
+    """Dark unexplored tiles that touch lit map."""
+    y0, y1, x0, x1 = _map_bounds(arr)
+    region = arr[y0:y1, x0:x1]
+    lum = region[:, :, 0].astype(np.int32) + region[:, :, 1] + region[:, :, 2]
+    dark = lum <= 50
+    lit = lum >= 140
+    if not np.any(dark) or not np.any(lit):
+        return []
+    edge = np.zeros(dark.shape, dtype=bool)
+    edge[1:, :] |= dark[1:, :] & lit[:-1, :]
+    edge[:-1, :] |= dark[:-1, :] & lit[1:, :]
+    edge[:, 1:] |= dark[:, 1:] & lit[:, :-1]
+    edge[:, :-1] |= dark[:, :-1] & lit[:, 1:]
+    ys, xs = np.where(edge)
+    if xs.size == 0:
+        return []
+    rad, mn = _cluster_params(arr, 36, 12)
+    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(40, rad * 2))
+    out = []
+    for n, cx, cy in clusters[:10]:
+        out.append({"kind": "fog_edge", "x": cx, "y": cy, "n": n, "id": f"g{len(out)}"})
+    return out
+
+
 def observe_map(arr: np.ndarray) -> dict[str, Any]:
     units = find_units(arr)
     cities = find_cities(arr)
@@ -227,5 +282,7 @@ def observe_map(arr: np.ndarray) -> dict[str, Any]:
         "cities_own": own,
         "cities_enemy": enemy,
         "villages": villages,
+        "fog_edge": find_fog_edge(arr),
         "own_tribe": _own_tribe(),
+        "villages_enabled": villages_enabled(),
     }
