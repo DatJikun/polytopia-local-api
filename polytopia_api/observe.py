@@ -14,6 +14,7 @@ from . import driver
 def observe(shot: Any | None = None) -> dict[str, Any]:
     path = shot or driver.screenshot()
     im = Image.open(path)
+    coords.set_frame(*im.size)
     hud = driver.parse_hud(driver._ocr_hud_text(im))
     unit = driver.parse_unit_panel(
         driver.ocr_crop(im, coords.UNIT_CROP, driver.UNIT_PATH)
@@ -34,6 +35,11 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         "fruit": pix["fruit"],
         "overlay": overlay,
         "confirm_ready": confirm_ready,
-        "window": {k: info[k] for k in ("found", "pid", "window_id")},
+        "hits_space": "screen",
+        "window": {
+            k: info.get(k)
+            for k in ("found", "pid", "window_id", "width", "height")
+        },
+        "layout": coords.layout_info(),
         "screenshot": str(path),
     }

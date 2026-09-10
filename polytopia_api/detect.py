@@ -11,7 +11,9 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-# Map area — skip HUD and bottom chrome
+from . import coords
+
+# Map area in design space — skip HUD and bottom chrome
 MAP_Y0, MAP_Y1 = 90, 1040
 MAP_X0, MAP_X1 = 400, 1750
 
@@ -61,11 +63,47 @@ def _cluster(ys: np.ndarray, xs: np.ndarray, radius: int = 28, min_size: int = 8
     return out
 
 
-def _mask_in(arr: np.ndarray, lo: np.ndarray, hi: np.ndarray, y0=MAP_Y0, y1=MAP_Y1, x0=MAP_X0, x1=MAP_X1) -> tuple[np.ndarray, np.ndarray]:
-    region = arr[y0:y1, x0:x1]
+def _frame_xy(arr: np.ndarray, x: int, y: int) -> tuple[int, int]:
+    h, w = arr.shape[:2]
+    return (
+        int(round(x * w / coords.BASE_W)),
+        int(round(y * h / coords.BASE_H)),
+    )
+
+
+def _map_bounds(arr: np.ndarray) -> tuple[int, int, int, int]:
+    x0, y0 = _frame_xy(arr, MAP_X0, MAP_Y0)
+    x1, y1 = _frame_xy(arr, MAP_X1, MAP_Y1)
+    h, w = arr.shape[:2]
+    x0, x1 = max(0, min(x0, w)), max(0, min(x1, w))
+    y0, y1 = max(0, min(y0, h)), max(0, min(y1, h))
+    if x1 <= x0:
+        x1 = min(w, x0 + 1)
+    if y1 <= y0:
+        y1 = min(h, y0 + 1)
+    return y0, y1, x0, x1
+
+
+def _mask_in(
+    arr: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    ax0, ay0 = _frame_xy(arr, x0, y0)
+    ax1, ay1 = _frame_xy(arr, x1, y1)
+    h, w = arr.shape[:2]
+    ay0, ay1 = max(0, min(ay0, h)), max(0, min(ay1, h))
+    ax0, ax1 = max(0, min(ax0, w)), max(0, min(ax1, w))
+    if ay1 <= ay0 or ax1 <= ax0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    region = arr[ay0:ay1, ax0:ax1]
     m = np.all((region >= lo) & (region <= hi), axis=2)
     ys, xs = np.where(m)
-    return ys + y0, xs + x0
+    return ys + ay0, xs + ax0
 
 
 def is_water_rgb(r: int, g: int, b: int) -> bool:
@@ -92,10 +130,18 @@ def is_move_rgb(r: int, g: int, b: int) -> bool:
     return not is_water_rgb(r, g, b)
 
 
+def _cluster_params(arr: np.ndarray, radius: int, min_size: int) -> tuple[int, int]:
+    h, w = arr.shape[:2]
+    s = min(w / coords.BASE_W, h / coords.BASE_H)
+    area = (w * h) / (coords.BASE_W * coords.BASE_H)
+    return max(8, int(round(radius * s))), max(3, int(round(min_size * area)))
+
+
 def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
     """Large brand-blue blobs in the confirm band."""
     ys, xs = _mask_in(arr, DOIT_LO, DOIT_HI, y0=560, y1=920, x0=800, x1=1450)
-    clusters = _cluster(ys, xs, radius=40, min_size=80)
+    rad, mn = _cluster_params(arr, 40, 80)
+    clusters = _cluster(ys, xs, radius=rad, min_size=mn)
     out = []
     for n, cx, cy in clusters:
         out.append({"kind": "do_it", "x": cx, "y": cy, "n": n})
@@ -104,12 +150,14 @@ def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
 
 def find_train_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
     ys, xs = _mask_in(arr, TRAIN_LO, TRAIN_HI, y0=700, y1=920, x0=900, x1=1350)
-    clusters = _cluster(ys, xs, radius=35, min_size=60)
+    rad, mn = _cluster_params(arr, 35, 60)
+    clusters = _cluster(ys, xs, radius=rad, min_size=mn)
     return [{"kind": "train", "x": cx, "y": cy, "n": n} for n, cx, cy in clusters]
 
 
 def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:
-    region = arr[MAP_Y0:MAP_Y1, MAP_X0:MAP_X1]
+    y0, y1, x0, x1 = _map_bounds(arr)
+    region = arr[y0:y1, x0:x1]
     r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
     m = (
         (r >= 110) & (r <= 175)
@@ -121,7 +169,8 @@ def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:
         & ~((r < 100) & (g >= 190))
     )
     ys, xs = np.where(m)
-    clusters = _cluster(ys + MAP_Y0, xs + MAP_X0, radius=24, min_size=10)
+    rad, mn = _cluster_params(arr, 24, 10)
+    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
     marks = []
     for n, cx, cy in clusters:
         pr, pg, pb = (int(x) for x in arr[cy, cx])
@@ -132,7 +181,8 @@ def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_fruit(arr: np.ndarray) -> list[dict[str, Any]]:
-    region = arr[MAP_Y0:MAP_Y1, MAP_X0:MAP_X1]
+    y0, y1, x0, x1 = _map_bounds(arr)
+    region = arr[y0:y1, x0:x1]
     r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
     m = (
         (r <= 110)
@@ -140,14 +190,15 @@ def find_fruit(arr: np.ndarray) -> list[dict[str, Any]]:
         & (b >= 190)
         & ((b - g) >= 40)
         & (r < 120)
-        & ~((g >= 190) & (b >= 230))  # drop open water
+        & ~((g >= 190) & (b >= 230))
     )
     ys, xs = np.where(m)
-    clusters = _cluster(ys + MAP_Y0, xs + MAP_X0, radius=22, min_size=6)
+    rad, mn = _cluster_params(arr, 22, 6)
+    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
     fruits = []
+    max_n = max(40, int(round(140 * (arr.shape[0] * arr.shape[1]) / (coords.BASE_W * coords.BASE_H))))
     for n, cx, cy in clusters:
-        # Water lakes are huge; fruit cubes are small
-        if n > 140:
+        if n > max_n:
             continue
         pr, pg, pb = (int(x) for x in arr[cy, cx])
         if is_water_rgb(pr, pg, pb):
@@ -164,8 +215,8 @@ def sample(arr: np.ndarray, x: int, y: int) -> list[int]:
 
 
 def overlay_flags(arr: np.ndarray) -> dict[str, Any]:
-    from . import coords
-
+    h, w = arr.shape[:2]
+    coords.set_frame(w, h)
     doit_px = sample(arr, *coords.DO_IT)
     train_px = sample(arr, *coords.TRAIN)
     back_px = sample(arr, *coords.BACK)

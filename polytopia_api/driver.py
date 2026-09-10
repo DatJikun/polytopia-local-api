@@ -18,7 +18,6 @@ from PIL import Image
 from . import coords
 
 DISPLAY = os.environ.get("DISPLAY", ":1")
-SCREEN_SIZE = os.environ.get("POLYTOPIA_SCREEN", "1920x1200")
 SHOT_PATH = Path("/tmp/polytopia-api.png")
 HUD_PATH = Path("/tmp/polytopia-hud.png")
 UNIT_PATH = Path("/tmp/polytopia-unit.png")
@@ -61,15 +60,36 @@ def find_window() -> dict[str, Any]:
             cmd = parts[1] if len(parts) > 1 else ""
             break
     if pid is None:
-        return {"found": False, "pid": None, "window_id": None, "name": None}
+        return {
+            "found": False,
+            "pid": None,
+            "window_id": None,
+            "name": None,
+            "x": None,
+            "y": None,
+            "width": None,
+            "height": None,
+        }
 
     search = _run(["xdotool", "search", "--pid", str(pid)])
     wids = [w for w in (search.stdout or "").split() if w.isdigit()]
     wid = wids[-1] if wids else None
     name = None
+    x = y = width = height = None
     if wid:
         n = _run(["xdotool", "getwindowname", wid])
         name = (n.stdout or "").strip() or None
+        geo = _run(["xdotool", "getwindowgeometry", "--shell", wid])
+        vals: dict[str, int] = {}
+        for line in (geo.stdout or "").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                try:
+                    vals[k] = int(v)
+                except ValueError:
+                    continue
+        x, y = vals.get("X"), vals.get("Y")
+        width, height = vals.get("WIDTH"), vals.get("HEIGHT")
     return {
         "found": bool(wid),
         "pid": pid,
@@ -77,7 +97,57 @@ def find_window() -> dict[str, Any]:
         "name": name,
         "cmd": cmd,
         "display": DISPLAY,
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
     }
+
+
+def display_size() -> tuple[int, int]:
+    """Framebuffer size. POLYTOPIA_SCREEN=1280x800 overrides."""
+    env = os.environ.get("POLYTOPIA_SCREEN", "").strip().lower()
+    if "x" in env:
+        a, b = env.split("x", 1)
+        try:
+            return int(a), int(b)
+        except ValueError:
+            pass
+    r = _run(["xdotool", "getdisplaygeometry"])
+    parts = (r.stdout or "").split()
+    if len(parts) >= 2:
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            pass
+    return coords.BASE_W, coords.BASE_H
+
+
+def sync_layout(info: dict[str, Any] | None = None, image: Image.Image | None = None) -> dict[str, Any]:
+    """Point coords.py at the live window / screenshot / display."""
+    w = h = None
+    if image is not None:
+        w, h = image.size
+    elif info and info.get("width") and info.get("height"):
+        w, h = int(info["width"]), int(info["height"])
+    else:
+        w, h = display_size()
+    coords.set_frame(w, h)
+    return coords.layout_info()
+
+
+def grab_region() -> tuple[str, int, int]:
+    """ffmpeg x11grab source: size + offset of the game window, else full display."""
+    info = find_window()
+    if info.get("found") and info.get("width") and info.get("height"):
+        w, h = int(info["width"]), int(info["height"])
+        ox = int(info.get("x") or 0)
+        oy = int(info.get("y") or 0)
+        coords.set_frame(w, h)
+        return f"{w}x{h}", ox, oy
+    w, h = display_size()
+    coords.set_frame(w, h)
+    return f"{w}x{h}", 0, 0
 
 
 def activate() -> dict[str, Any]:
@@ -91,6 +161,8 @@ def activate() -> dict[str, Any]:
 
 def screenshot(path: Path | None = None) -> Path:
     out = path or SHOT_PATH
+    size, ox, oy = grab_region()
+    src = f"{DISPLAY}.0+{ox},{oy}"
     r = _run(
         [
             "ffmpeg",
@@ -98,9 +170,9 @@ def screenshot(path: Path | None = None) -> Path:
             "-f",
             "x11grab",
             "-video_size",
-            SCREEN_SIZE,
+            size,
             "-i",
-            f"{DISPLAY}.0",
+            src,
             "-frames:v",
             "1",
             str(out),
@@ -109,6 +181,11 @@ def screenshot(path: Path | None = None) -> Path:
     )
     if r.returncode != 0 or not out.exists():
         raise PolytopiaError(f"screenshot failed: {(r.stderr or r.stdout)[-400:]}")
+    try:
+        im = Image.open(out)
+        coords.set_frame(*im.size)
+    except Exception:
+        pass
     return out
 
 
@@ -118,15 +195,33 @@ def pixel(x: int, y: int, path: Path | None = None) -> tuple[int, int, int]:
     return int(r), int(g), int(b)
 
 
-def click(x: int, y: int, button: int = 1, repeats: int = 1, pause: float = 0.12) -> dict[str, Any]:
+def click(
+    x: int,
+    y: int,
+    button: int = 1,
+    repeats: int = 1,
+    pause: float = 0.12,
+    space: str = "screen",
+) -> dict[str, Any]:
+    """Click. ``space=design`` maps 1920×1200 playbook coords onto the live frame."""
     info = activate()
+    sync_layout(info)
+    if space == "design":
+        x, y = coords.xy(x, y)
     wid = str(info["window_id"])
     _run(["xdotool", "mousemove", "--window", wid, str(int(x)), str(int(y))])
     time.sleep(pause)
     for _ in range(max(1, repeats)):
         _run(["xdotool", "click", str(button)])
         time.sleep(0.15)
-    return {"ok": True, "x": int(x), "y": int(y), "window_id": info["window_id"]}
+    return {
+        "ok": True,
+        "x": int(x),
+        "y": int(y),
+        "space": space,
+        "window_id": info["window_id"],
+        "layout": coords.layout_info(),
+    }
 
 
 def press(key: str) -> dict[str, Any]:
@@ -166,7 +261,9 @@ def confirm() -> dict[str, Any]:
 
 
 def ocr_crop(im: Image.Image, box: tuple[int, int, int, int], path: Path) -> str:
-    crop = im.crop(box)
+    coords.set_frame(*im.size)
+    crop_box = coords.clamp_box(tuple(int(v) for v in box), *im.size)
+    crop = im.crop(crop_box)
     crop.save(path)
     r = _run(["tesseract", str(path), "stdout", "--psm", "6"], timeout=15)
     return (r.stdout or "").strip()
@@ -246,8 +343,10 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
 def hud() -> dict[str, Any]:
     shot = screenshot()
     im = Image.open(shot)
+    coords.set_frame(*im.size)
     parsed = parse_hud(_ocr_hud_text(im))
     info = find_window()
-    parsed["window"] = {k: info[k] for k in ("found", "pid", "window_id")}
+    parsed["window"] = {k: info[k] for k in ("found", "pid", "window_id", "width", "height")}
+    parsed["layout"] = coords.layout_info()
     parsed["screenshot"] = str(shot)
     return parsed

@@ -7,11 +7,31 @@ Nieoficjalna nakładka na okno **The Battle of Polytopia** (Unity): screenshot +
 - Linux + X11 (`DISPLAY`, np. `:1`)
 - `python3`, `numpy`, `Pillow`
 - `ffmpeg`, `tesseract`, `xdotool`
-- Gra odpalona fullscreen 1920×1200 (koordy UI są pod ten layout)
+- Gra może być **dowolny fullscreen** — koordy są w przestrzeni 1920×1200 i skalują się do okna. **1280×800** to ten sam 16:10 (mnożnik 2/3). Nadpis: `POLYTOPIA_SCREEN=1280x800`.
 
 ```bash
 python3 -m polytopia_api.server   # http://127.0.0.1:8765
 ```
+
+`GET /health` zwraca `layout.frame`, `layout.scale` i przeliczone przyciski (`end_turn`, `do_it`, …).
+
+`POST /click` domyślnie bierze koordy **design** (1920×1200), tak jak playbook:
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/click \
+  -H 'Content-Type: application/json' \
+  -d '{"x":1111,"y":1130}'
+```
+
+Pola z `/observe` (`move_marks`, `fruit`, bloby overlay) są już w pikselach okna (`hits_space: "screen"`). `think_turn` klika je tak:
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/click \
+  -H 'Content-Type: application/json' \
+  -d '{"x":828,"y":400,"space":"screen"}'
+```
+
+Bez `"space":"screen"` serwer potraktuje liczby jako 1920×1200 i przeskaluje jeszcze raz.
 
 ## Endpointy
 

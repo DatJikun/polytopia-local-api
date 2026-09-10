@@ -1,6 +1,7 @@
 from PIL import Image
 
-from polytopia_api.detect import find_move_marks, is_move_rgb, is_water_rgb, observe_pixels
+from polytopia_api import coords
+from polytopia_api.detect import find_move_marks, is_move_rgb, is_water_rgb
 from polytopia_api.driver import parse_hud, parse_unit_panel
 from polytopia_api.play import plan
 
@@ -54,7 +55,47 @@ def test_find_move_marks_ignores_water():
     assert all(abs(m["x"] - 1242) < 20 and abs(m["y"] - 600) < 20 for m in marks)
 
 
+def test_scale_1280x800():
+    coords.set_frame(1920, 1200)
+    assert tuple(coords.END_TURN) == (1111, 1130)
+    assert tuple(coords.DO_IT) == (1117, 681)
+
+    coords.set_frame(1280, 800)
+    sx, sy = 1280 / 1920, 800 / 1200
+    assert abs(sx - sy) < 1e-9  # same 16:10
+    ex, ey = tuple(coords.END_TURN)
+    assert ex == round(1111 * sx)
+    assert ey == round(1130 * sy)
+    dx, dy = tuple(coords.DO_IT)
+    assert dx == round(1117 * sx)
+    assert dy == round(681 * sy)
+    assert coords.xy(1111, 1130) == (ex, ey)  # POST /click space=design
+    # HUD crop stays in the top band
+    hud = tuple(coords.HUD_CROP)
+    assert hud[1] == 0 and hud[3] < 80
+    info = coords.layout_info()
+    assert info["frame"] == [1280, 800]
+    assert info["scale"] == [0.6667, 0.6667]
+    coords.set_frame(1920, 1200)
+
+
+def test_find_move_marks_1280():
+    im = Image.new("RGB", (1280, 800), (20, 20, 20))
+    px = im.load()
+    for y in range(int(700 * 800 / 1200), int(820 * 800 / 1200)):
+        for x in range(int(900 * 1280 / 1920), int(1100 * 1280 / 1920)):
+            px[x, y] = (58, 199, 249)
+    cx, cy = round(1242 * 1280 / 1920), round(600 * 800 / 1200)
+    for y in range(cy - 8, cy + 8):
+        for x in range(cx - 10, cx + 10):
+            px[x, y] = (146, 204, 255)
+    marks = find_move_marks(__import__("numpy").asarray(im).astype("int16"))
+    assert marks, marks
+    assert all(abs(m["x"] - cx) < 25 and abs(m["y"] - cy) < 25 for m in marks)
+
+
 def test_plan_priorities():
+    coords.set_frame(1920, 1200)
     base_overlay = {
         "back_lit": False,
         "do_it_pixel": False,
@@ -148,5 +189,7 @@ if __name__ == "__main__":
     test_parse_unit()
     test_water_vs_move()
     test_find_move_marks_ignores_water()
+    test_scale_1280x800()
+    test_find_move_marks_1280()
     test_plan_priorities()
     print("ok")

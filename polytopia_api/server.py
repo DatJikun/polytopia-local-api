@@ -86,12 +86,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 info = driver.find_window()
-                _json(self, 200, {"ok": True, "game": info, "coords": {
-                    "do_it": coords.DO_IT,
-                    "train": coords.TRAIN,
-                    "end_turn": coords.END_TURN,
-                    "back": coords.BACK,
-                }})
+                driver.sync_layout(info)
+                _json(self, 200, {
+                    "ok": True,
+                    "game": info,
+                    "layout": coords.layout_info(),
+                })
                 return
             if path == "/hud":
                 _json(self, 200, driver.hud())
@@ -100,10 +100,14 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, 200, do_observe())
                 return
             if path == "/pixel":
+                space = (q.get("space") or ["design"])[0]
                 x = int((q.get("x") or ["0"])[0])
                 y = int((q.get("y") or ["0"])[0])
+                driver.sync_layout()
+                if space == "design":
+                    x, y = coords.xy(x, y)
                 r, g, b = driver.pixel(x, y)
-                _json(self, 200, {"x": x, "y": y, "rgb": [r, g, b]})
+                _json(self, 200, {"x": x, "y": y, "space": space, "rgb": [r, g, b]})
                 return
             if path == "/screenshot":
                 shot = driver.screenshot()
@@ -130,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                 x = int(body["x"])
                 y = int(body["y"])
                 repeats = int(body.get("repeats") or 1)
-                _json(self, 200, driver.click(x, y, repeats=repeats))
+                space = str(body.get("space") or "design")
+                _json(self, 200, driver.click(x, y, repeats=repeats, space=space))
                 return
             if path == "/confirm":
                 _json(self, 200, driver.confirm())

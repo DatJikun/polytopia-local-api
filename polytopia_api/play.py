@@ -35,14 +35,15 @@ def plan(obs: dict[str, Any]) -> dict[str, Any]:
         return {"name": "back", "reason": "refuse Clear Forest"}
     if confirm_ready and (unit.get("harvest") or overlay.get("do_it_pixel") or overlay.get("do_it_blobs")):
         blobs = overlay.get("do_it_blobs") or []
-        x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else coords.DO_IT
+        x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.DO_IT)
         return {"name": "confirm_harvest", "x": x, "y": y}
     if confirm_ready and (unit.get("train") or overlay.get("train_pixel") or overlay.get("train_blobs")):
         blobs = overlay.get("train_blobs") or []
-        x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else coords.TRAIN
+        x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.TRAIN)
         return {"name": "confirm_train", "x": x, "y": y}
     if overlay.get("do_it_pixel"):
-        return {"name": "confirm_do_it", "x": coords.DO_IT[0], "y": coords.DO_IT[1]}
+        x, y = tuple(coords.DO_IT)
+        return {"name": "confirm_do_it", "x": x, "y": y}
     if unit.get("can_move") and obs.get("move_marks"):
         mark = _pick(obs["move_marks"])
         if mark:
@@ -127,7 +128,7 @@ def _execute(name: str, planned: dict[str, Any], before: dict[str, Any]) -> dict
             action["reason"] = "fruit click did not open harvest"
         return _result(before, action)
     if name == "deselect":
-        driver.click(700, 300)
+        driver.click(*coords.DESELECT)
         _sleep()
         return _result(before, action)
     if name == "blocked_end_turn":
