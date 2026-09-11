@@ -32,6 +32,16 @@ def reset() -> None:
     _UNIT_INDEX = {}
 
 
+def all_cities() -> list[dict[str, Any]]:
+    """Unique sticky cities for this turn (id → last record)."""
+    seen: dict[str, dict[str, Any]] = {}
+    for c in _CITY_INDEX.values():
+        cid = str(c.get("id") or c.get("city_id") or "")
+        if cid and cid not in seen:
+            seen[cid] = c
+    return list(seen.values())
+
+
 def lookup_city(ident: str) -> dict[str, Any] | None:
     ident = str(ident)
     hit = _CITY_INDEX.get(ident)

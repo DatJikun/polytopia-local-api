@@ -10,7 +10,7 @@ from . import coords
 from . import detect
 from . import driver
 from . import snapshot
-from .observe import lookup, lookup_city, lookup_unit, observe, remember
+from .observe import all_cities, lookup, lookup_city, lookup_unit, observe, remember
 
 ATTACK_BUDGET_S = 7.5
 SELECT_LIGHT_SLEEP_S = 0.18
@@ -82,7 +82,126 @@ def _city_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
     points = [(x, plate, "plate")]
     if abs(building - plate) >= 6:
         points.append((x, building, "building"))
+    below = plate + 10
+    if all(abs(below - p[1]) >= 6 for p in points):
+        points.append((x, below, "plate_below"))
     return points
+
+
+def _panel_capture(obs: dict[str, Any] | None) -> bool:
+    obs = obs or {}
+    unit = obs.get("unit") or {}
+    ready = obs.get("ready") or {}
+    return bool(unit.get("capture") or ready.get("capture"))
+
+
+def _city_near_xy(
+    x: int,
+    y: int,
+    obs: dict[str, Any] | None,
+    max_hex: float = 0.85,
+) -> dict[str, Any] | None:
+    """Treat a raw x,y as a city when it lands on a known city hex/plate."""
+    frame = _frame(obs)
+    pitch = combat.hex_pitch(*frame)
+    best = None
+    best_d = max_hex
+    cities = []
+    seen: set[str] = set()
+    for c in list((obs or {}).get("cities") or []) + all_cities():
+        cid = str(c.get("id") or c.get("city_id") or "")
+        if cid and cid in seen:
+            continue
+        if cid:
+            seen.add(cid)
+        cities.append(c)
+    for c in cities:
+        for px, py in combat.city_stand_points(c, frame) or [(int(c.get("x") or 0), int(c.get("y") or 0))]:
+            d = combat.tile_dist(int(x), int(y), px, py, pitch)
+            if d <= best_d:
+                best_d = d
+                best = c
+        try:
+            plate = int(c.get("plate_y") or c["y"])
+            d = combat.tile_dist(int(x), int(y), int(c["x"]), plate, pitch)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d <= best_d:
+            best_d = d
+            best = c
+    return best
+
+
+def _on_city_mark(
+    marks: list[dict[str, Any]],
+    dest: dict[str, Any],
+    frame: tuple[int, int],
+) -> tuple[dict[str, Any] | None, float | None]:
+    """Blue mark on the city hex only — never an adjacent tile (~1.0 hex)."""
+    best = None
+    best_d = combat.ON_CITY_MARK_HEX
+    for px, py in combat.city_stand_points(dest, frame):
+        mark, d = combat.nearest_mark_hex(marks, px, py, frame, combat.ON_CITY_MARK_HEX)
+        if mark is not None and d is not None and d <= best_d:
+            best = mark
+            best_d = d
+    return best, (None if best is None else round(best_d, 3))
+
+
+def _stood_on_city(
+    obs: dict[str, Any],
+    dest: dict[str, Any] | None,
+    frame: tuple[int, int],
+    allow_panel: bool = False,
+) -> dict[str, Any]:
+    """Pixel ON-tile. Panel Capture only counts after we clicked this city hex."""
+    on = combat.unit_on_city(
+        obs.get("units") or [],
+        dest,
+        frame,
+        obs.get("unit") or {},
+        max_hex=0.55,
+        want_owner="own",
+    )
+    if on.get("ok"):
+        return on
+    if allow_panel:
+        wide = combat.unit_on_city(
+            obs.get("units") or [],
+            dest,
+            frame,
+            obs.get("unit") or {},
+            max_hex=combat.STANDING_HEX,
+            want_owner="own",
+        )
+        if wide.get("ok"):
+            return wide
+    if not _panel_capture(obs):
+        return on
+    # Capture panel + a unit still on THIS hex (sprite offset), not adjacent.
+    relaxed = combat.unit_on_city(
+        obs.get("units") or [],
+        dest,
+        frame,
+        obs.get("unit") or {},
+        max_hex=combat.STANDING_HEX,
+        want_owner="own",
+    )
+    if relaxed.get("ok"):
+        relaxed["reason"] = "panel_capture"
+        return relaxed
+    if not allow_panel:
+        return on
+    # After a city-hex click, Capture is ground truth even if the HP bar
+    # clustering missed the rider on Disrof.
+    center = combat.city_tile_center(dest, frame) if dest else None
+    return {
+        "ok": True,
+        "reason": "panel_capture",
+        "hex_pitch": combat.hex_pitch(*frame),
+        "tile_xy": [center[0], center[1]] if center else None,
+        "hex_dist": on.get("hex_dist"),
+    }
 
 
 def select_unit(
@@ -178,6 +297,10 @@ def _move_to(
     frame = _frame(after_select)
     marks = list(after_select.get("move_marks") or [])
     panel = after_select.get("unit") or {}
+    if dest is None and x is not None and y is not None:
+        dest = _city_near_xy(int(x), int(y), after_select)
+        if dest and not city_id:
+            city_id = str(dest.get("id") or dest.get("city_id") or "") or None
     is_city = bool(
         dest
         and (
@@ -200,9 +323,7 @@ def _move_to(
                 )
         x, y = tile_xy
         space = "screen"
-        already = combat.unit_on_city(
-            after_select.get("units") or [], dest, frame, panel, max_hex=0.55, want_owner="own"
-        )
+        already = _stood_on_city(after_select, dest, frame)
         if already.get("ok"):
             return {
                 "ok": True,
@@ -234,15 +355,24 @@ def _move_to(
             (x, y),
             frame,
         )
-        mark, hex_d = combat.nearest_mark_hex(marks, x, y, frame, 1.15)
+        # Adjacent blue hexes (~1.0) used to win nearest_mark_hex(1.15) and
+        # walk NEXT TO Disrof while still returning ok:true.
+        mark, hex_d = _on_city_mark(marks, dest, frame)
         if mark is None:
             arr = _shot_arr(after_select)
             if arr is not None:
-                tint = detect.move_tint_at(arr, x, y)
-                if tint.get("ok"):
-                    mark, hex_d = tint, 0.0
-        garrison = combat.garrison_unit(after_select.get("units") or [], dest, frame)
+                for px, py in combat.city_stand_points(dest, frame):
+                    tint = detect.move_tint_at(arr, px, py)
+                    if tint.get("ok"):
+                        mark, hex_d = tint, 0.0
+                        x, y = px, py
+                        break
+        garrison = combat.garrison_unit(after_select.get("units") or [], dest, frame, max_hex=0.9)
         enemy_on = bool(garrison and str(garrison.get("owner") or "") == "enemy")
+        atk_marks = list(after_select.get("attack_marks") or [])
+        red_on, _ = combat.nearest_mark_hex(atk_marks, x, y, frame, 0.85)
+        if red_on is not None:
+            enemy_on = True
         if mark is None and reach.get("ok") and not enemy_on and panel.get("can_move") is not False:
             mark = {"x": x, "y": y, "n": 0, "kind": "city_tile"}
             hex_d = 0.0
@@ -285,13 +415,22 @@ def _move_to(
                 stood_on_city=False,
             )
         clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
-        _sleep(0.35)
+        _sleep(0.5)
         after = observe(mode="marks")
-        on = combat.unit_on_city(
-            after.get("units") or [], dest, frame, after.get("unit") or {}, max_hex=0.55, want_owner="own"
-        )
-        return {
-            "ok": True,
+        on = _stood_on_city(after, dest, frame, allow_panel=True)
+        # Clicking the frost plate selects the city (TRAIN) instead of walking.
+        if not on.get("ok") and (after.get("unit") or {}).get("train") and not _panel_capture(after):
+            for px, py in combat.city_stand_points(dest, frame)[1:]:
+                clicked = _click(px, py, space="screen")
+                _sleep(0.45)
+                after = observe(mode="marks")
+                on = _stood_on_city(after, dest, frame, allow_panel=True)
+                if on.get("ok"):
+                    mark = {"x": px, "y": py, "n": 0, "kind": "city_tile_retry"}
+                    break
+        stood = bool(on.get("ok"))
+        out = {
+            "ok": stood,
             "name": "move_to",
             "x": clicked["x"],
             "y": clicked["y"],
@@ -301,7 +440,7 @@ def _move_to(
             "clicked_mark": mark,
             "mark_hex_dist": hex_d,
             "selected": selected,
-            "stood_on_city": bool(on.get("ok")),
+            "stood_on_city": stood,
             "on_city": on,
             "suggested_tile_xy": [x, y],
             "unit": after.get("unit"),
@@ -309,6 +448,10 @@ def _move_to(
             "ready": after.get("ready"),
             "turn_diff": after.get("turn_diff"),
         }
+        if not stood:
+            out["reason"] = "not_stood_on_city"
+            out["hint"] = "clicked the city hex but unit is still adjacent — Capture needs ON tile"
+        return out
     if dest:
         x, y = int(dest["x"]), int(dest["y"])
         space = "screen"
@@ -381,15 +524,24 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         return {"ok": False, "name": "capture", "reason": f"no entity {city_id}", "city_id": city_id}
     before = remember() or observe()
     frame = _frame(before)
-    on = combat.unit_on_city(
-        before.get("units") or [],
-        hit,
-        frame,
-        before.get("unit") or {},
-        max_hex=0.4,
-        want_owner="own",
-    )
-    panel_capture = bool((before.get("unit") or {}).get("capture") or (before.get("ready") or {}).get("capture"))
+    on = _stood_on_city(before, hit, frame)
+    panel_capture = _panel_capture(before)
+    if not on.get("ok"):
+        occupant = combat.unit_on_city(
+            before.get("units") or [],
+            hit,
+            frame,
+            before.get("unit") or {},
+            max_hex=combat.STANDING_HEX,
+            want_owner="own",
+        )
+        uid = (occupant.get("unit") or {}).get("id") if occupant.get("ok") else None
+        if uid:
+            select_unit(id=str(uid), light=True)
+            before = remember() or before
+            frame = _frame(before)
+            on = _stood_on_city(before, hit, frame)
+            panel_capture = _panel_capture(before)
     if not on.get("ok"):
         return {
             "ok": False,
@@ -554,14 +706,15 @@ def attack(
         }
     frame = _frame(before)
     garrison = combat.garrison_unit(before.get("units") or [], dest, frame) if dest else None
-    if garrison:
+    # Red hexes sit on the TILE. Aiming at a tall giant's HP bar (above the
+    # hex) used to miss the mark and return no_mark_on_target.
+    center = combat.city_tile_center(dest, frame) if dest else None
+    if center:
+        x, y = center
+    elif garrison:
         x, y = int(garrison["x"]), int(garrison["y"])
     elif dest:
-        center = combat.city_tile_center(dest, frame)
-        if center:
-            x, y = center
-        else:
-            x, y = int(dest["x"]), int(dest["y"])
+        x, y = int(dest["x"]), int(dest["y"])
     if x is None or y is None:
         return {
             "ok": False,
@@ -586,16 +739,37 @@ def attack(
         marks,
     )
     hp_before = _hp_snapshot(before, to_id or city_id, x, y)
-    mark, d_hex = combat.nearest_mark_hex(marks, x, y, frame, 1.15)
+    mark, d_hex = None, None
+    aims: list[tuple[int, int]] = [(int(x), int(y))]
+    if garrison:
+        aims.append((int(garrison["x"]), int(garrison["y"])))
+    if dest:
+        for px, py in combat.city_stand_points(dest, frame):
+            aims.append((px, py))
+    seen_aim: set[tuple[int, int]] = set()
+    best_d = 1.4
+    for ax, ay in aims:
+        key = (ax, ay)
+        if key in seen_aim:
+            continue
+        seen_aim.add(key)
+        hit_m, hit_d = combat.nearest_mark_hex(marks, ax, ay, frame, 1.4)
+        if hit_m is not None and hit_d is not None and hit_d <= best_d:
+            mark, d_hex = hit_m, hit_d
+            best_d = hit_d
+            x, y = ax, ay
     if mark is None:
         mark = verdict.get("red_mark")
         d_hex = None
     if mark is None:
         arr = _shot_arr(before)
         if arr is not None:
-            tint = detect.attack_tint_at(arr, x, y)
-            if tint.get("ok"):
-                mark, d_hex = tint, 0.0
+            for ax, ay in aims:
+                tint = detect.attack_tint_at(arr, ax, ay)
+                if tint.get("ok"):
+                    mark, d_hex = tint, 0.0
+                    x, y = ax, ay
+                    break
     if mark is None:
         return {
             "ok": False,

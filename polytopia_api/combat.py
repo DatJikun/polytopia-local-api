@@ -61,6 +61,12 @@ def city_id_for_tile(gx: int, gy: int) -> str:
     return f"c{int(gx)}_{int(gy)}"
 
 
+# Adjacent hex center is ~1.0. Marks/units inside this are ON the city tile.
+ON_CITY_MARK_HEX = 0.65
+# HP bars sit above sprites; 0.4 missed riders on Disrof, 1.15 counted adjacent.
+STANDING_HEX = 0.8
+
+
 def city_tile_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tuple[int, int] | None:
     """Standable hex — the building, not the nameplate and not the roof edge.
 
@@ -70,21 +76,63 @@ def city_tile_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tup
     """
     if not city:
         return None
-    if city.get("tile_xy"):
-        try:
-            return int(city["tile_xy"][0]), int(city["tile_xy"][1])
-        except (KeyError, TypeError, ValueError, IndexError):
-            pass
     pitch = hex_pitch(*frame)
     x = int(city["x"])
+    from_plate = None
     if city.get("plate_y") is not None:
         plate = int(city["plate_y"])
-        # One hex from the plate toward the building (up the screen).
         y = plate - int(round(0.75 * pitch))
         if y < 0:
             y = int(city.get("y") or plate)
-        return x, max(0, y)
+        from_plate = (x, max(0, y))
+    stored = None
+    if city.get("tile_xy"):
+        try:
+            stored = (int(city["tile_xy"][0]), int(city["tile_xy"][1]))
+        except (KeyError, TypeError, ValueError, IndexError):
+            stored = None
+    if stored and from_plate:
+        # Sticky tile_xy sometimes lands on the frost plate. Clicking that
+        # selects the city instead of walking onto the hex.
+        if abs(stored[1] - int(city["plate_y"])) <= int(round(0.35 * pitch)):
+            return from_plate
+        return stored
+    if stored:
+        return stored
+    if from_plate:
+        return from_plate
     return x, int(city["y"])
+
+
+def city_stand_points(city: dict[str, Any] | None, frame: tuple[int, int]) -> list[tuple[int, int]]:
+    """Click candidates for the standable hex (tile, then plate-up, then building)."""
+    if not city:
+        return []
+    pitch = hex_pitch(*frame)
+    pts: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def _add(px: int, py: int) -> None:
+        key = (int(px) // 4 * 4, int(py) // 4 * 4)
+        if key in seen:
+            return
+        seen.add(key)
+        pts.append((int(px), int(py)))
+
+    center = city_tile_center(city, frame)
+    if center:
+        _add(center[0], center[1])
+    try:
+        cx = int(city["x"])
+    except (KeyError, TypeError, ValueError):
+        return pts
+    if city.get("plate_y") is not None:
+        plate = int(city["plate_y"])
+        _add(cx, max(0, plate - int(round(0.75 * pitch))))
+        _add(cx, max(0, plate - pitch))
+    if city.get("y") is not None:
+        _add(cx, int(city["y"]))
+    return pts
 
 
 def tile_dist(x0: int, y0: int, x1: int, y1: int, pitch: int) -> float:
@@ -203,10 +251,15 @@ def unit_on_city(
     city: dict[str, Any] | None,
     frame: tuple[int, int],
     panel: dict[str, Any] | None = None,
-    max_hex: float = 0.4,
+    max_hex: float = 0.55,
     want_owner: str | None = "own",
 ) -> dict[str, Any]:
-    """True when a unit stands ON the city tile (Capture), not merely adjacent."""
+    """True when a unit stands ON the city tile (Capture), not merely adjacent.
+
+    Default 0.55 hex is inside the tile. Adjacent hex centers are ~1.0.
+    Callers that just clicked the city hex may pass STANDING_HEX (0.8) for
+    HP-bar offset. Panel Capture alone with no unit is not enough.
+    """
     panel = panel or {}
     if not city:
         return {"ok": False, "reason": "no_city"}

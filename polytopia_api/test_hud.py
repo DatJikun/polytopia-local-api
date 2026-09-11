@@ -1004,6 +1004,21 @@ def test_attack_garrison_hp_and_on_city():
     assert on["ok"] is True
     far = unit_on_city([{"id": "u9", "x": 800, "y": 400}], city, (1280, 800), {})
     assert far["ok"] is False and far["reason"] == "not_standing_on_city"
+    adjacent = unit_on_city(
+        [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        city,
+        (1280, 800),
+        {},
+    )
+    assert adjacent["ok"] is False, adjacent
+    on_sprite = unit_on_city(
+        [{"id": "u1", "x": 200, "y": 62, "owner": "own"}],
+        city,
+        (1280, 800),
+        {},
+        max_hex=0.8,
+    )
+    assert on_sprite["ok"] is True, on_sprite
     panel = unit_on_city([], city, (1280, 800), {"capture": True})
     assert panel["ok"] is False
     assert panel["reason"] == "not_standing_on_city"
@@ -1019,6 +1034,17 @@ def test_find_train_blob_1280():
     assert blobs, blobs
     assert abs(blobs[0]["x"] - 740) < 30
     assert abs(blobs[0]["y"] - 530) < 30
+    from polytopia_api.detect import find_train_panel_buttons, overlay_flags
+
+    panel = Image.new("RGB", (1280, 800), (20, 20, 20))
+    pd = ImageDraw.Draw(panel)
+    pd.rectangle((160, 720, 240, 770), fill=(10, 122, 204))
+    panel_blobs = find_train_panel_buttons(as_rgb(panel))
+    assert panel_blobs, panel_blobs
+    assert abs(panel_blobs[0]["x"] - 200) < 30
+    assert panel_blobs[0]["y"] >= 700
+    flags = overlay_flags(as_rgb(panel))
+    assert flags["train_blobs"], flags["train_blobs"]
 
 
 def test_attack_marks_and_strike():
@@ -1499,6 +1525,174 @@ def test_move_to_never_returns_ok_null():
     assert r.get("reason")
 
 
+def _disrof_city():
+    return {
+        "id": "c5_3",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [5, 3],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+
+
+def test_move_to_does_not_click_adjacent_mark():
+    """Live: rider adjacent to Disrof — API clicked the adjacent blue, ok:true, stood_on_city:false."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    adj = {"id": "m_adj", "x": 164, "y": 80, "n": 80}
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "move_marks": [adj],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **before,
+        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": before["unit"]}
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert clicks and clicks[0] == (200, 80), clicks
+    assert (164, 80) not in clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    reset_obs()
+
+
+def test_move_to_ok_false_when_still_adjacent():
+    """Core live bug: ok:true without placing the unit ON the city tile."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    stuck = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [{"x": 164, "y": 80, "n": 80}],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    selected = {"ok": True, "unit": stuck["unit"]}
+    with patch.object(commands, "remember", return_value=stuck), patch.object(
+        commands, "observe", return_value=stuck
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert r.get("ok") is False, r
+    assert r.get("stood_on_city") is False
+    assert r.get("reason") == "not_stood_on_city"
+    assert clicks and clicks[0] == (200, 80), clicks
+    reset_obs()
+
+
+def test_move_to_xy_walks_onto_city_not_plate():
+    """Live: POST /move-to {x,y} used city plate coords and never stood ON the hex."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **before,
+        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": before["unit"]}
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", x=200, y=110)
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    assert clicks and clicks[0][1] < 110, clicks
+    assert clicks[0] == (200, 80), clicks
+    reset_obs()
+
+
+def test_city_tile_center_lifts_plate_xy():
+    from polytopia_api.combat import city_tile_center
+
+    city = {"x": 200, "y": 80, "plate_y": 110, "tile_xy": [200, 110]}
+    c = city_tile_center(city, (1280, 800))
+    assert c is not None
+    assert c[1] < 110
+    assert abs(c[1] - 83) <= 2
+
+
 def test_attack_fast_no_mark_not_timeout():
     """Negative /attack must return no_mark quickly — not burn the 7.5s budget."""
     from unittest.mock import patch
@@ -1584,6 +1778,10 @@ if __name__ == "__main__":
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_city_tile_when_in_range()
     test_move_to_never_returns_ok_null()
+    test_move_to_does_not_click_adjacent_mark()
+    test_move_to_ok_false_when_still_adjacent()
+    test_move_to_xy_walks_onto_city_not_plate()
+    test_city_tile_center_lifts_plate_xy()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
     print("ok")

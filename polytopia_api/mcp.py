@@ -53,7 +53,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_move_to",
-        "description": "Move to a map point or city_id from observe. Optional from_id to select first. Prefer city_id over computerUse.",
+        "description": "Walk onto a city tile (city_id or x,y). stood_on_city true only when the unit is ON the hex, not adjacent. Prefer city_id over computerUse.",
         "inputSchema": {
             "type": "object",
             "properties": {
