@@ -628,7 +628,8 @@ def _draw_tall_dense_low_gold_phantom(d, cx: int = 441, plate_y: int = 471) -> N
     """Live c12_16 @(441,455): tall mid-dens wood, almost no building gold.
 
     Vengir grey stone matches Bardur wood. A narrow full-height slat +
-    connected frost plate lands dens≈0.26 / gold_n=0 — not a moonrise longhouse.
+    connected frost plate lands dens≈0.26 / gold_n=0. Live after #46 the
+    same city was ww≈47 — classification is mid-dense/low-gold, not width.
     """
     d.rectangle((cx - 40, plate_y - 8, cx + 40, plate_y + 10), fill=(180, 180, 178))
     d.rectangle((cx - 8, plate_y - 2, cx - 2, plate_y + 6), fill=(40, 40, 40))
@@ -2433,18 +2434,19 @@ def _draw_live_light_wine_grey_c14_23(d, cx: int, plate_y: int) -> None:
 
 
 def _draw_gold_leaked_frost_phantom(d, cx: int, plate_y: int) -> None:
-    """After /recruit or /move-to: ww≈30 frost/wood + modest gold leak.
+    """After /recruit or /move-to: frost/wood + gold leak (live c15_12).
 
-    Either sparse (dens≈0.08 gold_n≥24) or a solid unit blob must not become
-    cities_own. Gold stays below Disrof lamp gold_n≥280.
+    #46 assumed leaked FPs stay ww≈30. Live T46 after recruit inflated the
+    wood bbox to ww≳36 / wh≳60; that must still not become cities_own.
+    Gold stays below Disrof lamp gold_n≥280. Plate stays fragment-sized.
     """
-    for i in range(6):
-        yy = plate_y - 56 + i * 8
-        d.rectangle((cx - 15, yy, cx + 14, yy + 2), fill=(90, 85, 80))
-    d.rectangle((cx - 28, plate_y - 6, cx + 28, plate_y + 10), fill=(180, 180, 178))
-    d.ellipse((cx + 14, plate_y - 4, cx + 26, plate_y + 8), fill=(224, 188, 63))
-    d.rectangle((cx - 22, plate_y - 2, cx - 16, plate_y + 6), fill=(40, 40, 40))
-    d.ellipse((cx - 4, plate_y - 36, cx + 6, plate_y - 26), fill=(224, 188, 63))
+    for i in range(8):
+        yy = plate_y - 64 + i * 8
+        d.rectangle((cx - 18, yy, cx + 19, yy + 2), fill=(90, 85, 80))
+    d.rectangle((cx - 22, plate_y - 6, cx + 22, plate_y + 8), fill=(180, 180, 178))
+    d.ellipse((cx + 10, plate_y - 4, cx + 20, plate_y + 6), fill=(224, 188, 63))
+    d.rectangle((cx - 18, plate_y - 2, cx - 13, plate_y + 5), fill=(40, 40, 40))
+    d.ellipse((cx - 8, plate_y - 40, cx + 10, plate_y - 24), fill=(224, 188, 63))
 
 
 def test_kissing_grey_stone_and_disrof_stay_two_enemy():
@@ -3135,14 +3137,13 @@ def _draw_zero_wine_c14_23(d, cx: int, plate_y: int) -> None:
 
 
 def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
-    """Live T46 after #45: cities_own==0, cities_enemy==4 missing c14_23.
+    """Live T46 after #46: own==2 on clean observe, enemy==4 missing the 5th.
 
-    Game Stats Bardur 2 / Vengir 5. find_cities returned only 4 enemies;
-    Bufla/Orkork never appeared as own. c12_16 had longhouse wood (warm≈936
-    ww≈47 wh≈72) tagged grey_stone — Bufla stolen. wine_n==0 so #45 salvage
-    missed c14_23. Keep the wide longhouse as own; salvage city-sized
-    frost+star even with wine_n=0; narrow slat grey-stone stays enemy;
-    gold-leaked ww≈30 and frost FPs stay out of own.
+    Game Stats Bardur 2 / Vengir 5. Bufla c7_16 + Orkork c16_24 are sparse
+    gold-lamp longhouses. #46 treated mid-dense ww≈47 c12_16 as Bufla so it
+    vanished (not grey_stone, not city-sized sparse own) and enemy stayed 4.
+    Wide mid-dense low-gold is the 5th Vengir; wine_n==0 c14_23 still
+    salvages; gold-leaked c15_12 (even ww≳36) stays out of own.
     """
     from polytopia_api.detect import as_rgb
     from polytopia_api.entities import (
@@ -3158,7 +3159,15 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
 
     coords.reset()
     coords.set_frame(1280, 800)
-    stolen_bufla = {
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 432, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 116, "seen": True,
+    }
+    wide_grey = {
         "id": "c12_16", "city_id": "c12_16", "tribe": "bardur", "owner": "own",
         "name": None, "confidence": 0.72,
         "evidence": ["frost_plate", "gold_star", "bardur_wood"],
@@ -3174,11 +3183,11 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
         "warm_n": 936, "wood_w": 32, "wood_h": 72, "wood_dens": 0.277,
         "gold_n": 5, "seen": True,
     }
-    orkork_split = {
+    orkork = {
         "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
         "name": None, "confidence": 0.72,
         "evidence": ["frost_plate", "gold_star", "bardur_wood"],
-        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 600, "w": 55,
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
         "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
         "gold_n": 68, "seen": True,
     }
@@ -3191,52 +3200,73 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
         "gold_n": 9, "wine_n": 0, "seen": True,
     }
     leaked = {
-        **_frost_wood_own_phantom("c15_15", [15, 15], 540, 405),
-        "gold_n": 36, "wood_w": 30, "wood_h": 52, "wood_dens": 0.08, "warm_n": 150,
-        "n": 500, "w": 56,
+        **_frost_wood_own_phantom("c15_12", [15, 12], 540, 324),
+        "gold_n": 40, "wood_w": 38, "wood_h": 64, "wood_dens": 0.08, "warm_n": 180,
+        "n": 620, "w": 58,
     }
     enemies = [
         _enemy_city("c9_12", [9, 12], 200, 200),
         _enemy_city("c6_9", [6, 9], 200, 360),
         _enemy_city("c23_17", [23, 17], 840, 460),
     ]
-    assert not _own_wood_is_grey_stone_mass(stolen_bufla)
+    assert _own_wood_is_grey_stone_mass(wide_grey)
     assert _own_wood_is_grey_stone_mass(slat)
-    assert _is_real_own_hit(stolen_bufla)
-    assert _is_real_own_hit(orkork_split)
+    assert not _is_real_own_hit(wide_grey)
+    assert _is_real_own_hit(bufla)
+    assert _is_real_own_hit(orkork)
     assert not _is_real_own_hit(leaked)
     assert _own_miss_is_dark_vengir(
         c14, sampled_tribe="bardur", col_tribe="bardur", frost_plate=True, marks=True,
         wine_n=0,
     )
+    assert _own_miss_is_dark_vengir(
+        wide_grey, sampled_tribe="bardur", col_tribe="bardur",
+        frost_plate=True, marks=True, wine_n=0,
+    )
     assert not _own_miss_is_dark_vengir(
-        stolen_bufla, sampled_tribe="bardur", col_tribe="bardur",
+        bufla, sampled_tribe="bardur", col_tribe="bardur",
         frost_plate=True, marks=True, wine_n=12,
     )
+    orkork_star_split = {
+        "id": "c15_24", "city_id": "c15_24", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 530, "y": 654, "plate_y": 667, "tile": [15, 24], "n": 534, "w": 43,
+        "warm_n": 793, "wood_w": 13, "wood_h": 61, "wood_dens": 0.245,
+        "gold_n": 5, "seen": True,
+    }
+    assert _own_wood_is_grey_stone_mass(orkork_star_split)
+    assert not _is_real_own_hit(orkork_star_split)
 
-    frame1 = session_cities([stolen_bufla, orkork_split, slat, c14, leaked, *enemies])
+    # Slat + wide_grey would be two grey cities; live has one 5th Vengir.
+    # Orkork's gold-star half must not become a 6th enemy.
+    frame1 = session_cities(
+        [bufla, orkork, wide_grey, orkork_star_split, c14, leaked, *enemies]
+    )
     own1 = {c["id"] for c in frame1 if c.get("owner") == "own"}
     en1 = {c["id"] for c in frame1 if c.get("owner") == "enemy"}
-    assert own1 == {"c12_16", "c16_24"}, frame1
-    assert "c14_23" in en1 and "c11_16" in en1, en1
-    assert "c15_15" not in own1 and "c15_15" not in en1
+    assert own1 == {"c7_16", "c16_24"}, frame1
+    assert "c14_23" in en1 and "c12_16" in en1, en1
+    assert "c15_12" not in own1 and "c15_12" not in en1
+    assert "c15_24" not in own1 and "c15_24" not in en1
     assert len(own1) == 2, own1
     assert len(en1) == 5, en1
 
     frame2 = session_cities(stabilize(
-        [dict(stolen_bufla), dict(orkork_split), dict(slat), dict(c14), dict(leaked), *enemies],
+        [dict(bufla), dict(orkork), dict(wide_grey), dict(orkork_star_split), dict(c14), dict(leaked), *enemies],
         frame1,
         keep_missing=True,
     ))
     frame3 = session_cities(stabilize(
-        [dict(stolen_bufla), dict(orkork_split), dict(slat), dict(c14), dict(leaked), *enemies],
+        [dict(bufla), dict(orkork), dict(wide_grey), dict(orkork_star_split), dict(c14), dict(leaked), *enemies],
         frame2,
         keep_missing=True,
     ))
     for frame in (frame2, frame3):
-        assert {c["id"] for c in frame if c.get("owner") == "own"} == {"c12_16", "c16_24"}
+        assert {c["id"] for c in frame if c.get("owner") == "own"} == {"c7_16", "c16_24"}
         en = {c["id"] for c in frame if c.get("owner") == "enemy"}
-        assert "c14_23" in en and len(en) == 5, en
+        assert "c14_23" in en and "c12_16" in en and len(en) == 5, en
+        assert "c15_24" not in en and "c15_12" not in en
 
     im = Image.new("RGB", (1280, 800), (22, 24, 28))
     d = ImageDraw.Draw(im)
@@ -3244,6 +3274,7 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
     _draw_bardur_city(d, 570, 667)
     _draw_gold_leaked_frost_phantom(d, 90, 520)
     _draw_gold_leaked_frost_phantom(d, 90, 360)
+    _draw_gold_leaked_frost_phantom(d, 540, 324)
     _draw_disrof_city(d, 320, 200)
     _draw_disrof_city(d, 980, 220)
     _draw_disrof_city(d, 1100, 360)
@@ -3263,6 +3294,10 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
     assert any(abs(x - 248) < 40 for x in xs), own
     assert any(abs(x - 570) < 40 for x in xs), own
     assert all(abs(int(c["x"]) - 90) > 40 for c in own), own
+    assert all(
+        abs(int(c["x"]) - 540) > 40 or abs(int(c.get("plate_y") or c["y"]) - 324) > 50
+        for c in own
+    ), own
     vengir = [c for c in enemy if c.get("tribe") == "vengir"]
     assert len(vengir) >= 5, mapped["cities"]
     assert any(abs(int(c["x"]) - 500) < 55 for c in vengir), enemy
@@ -3270,12 +3305,13 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
 
 
 def test_observe_stays_2_5_after_recruit_move_gold_leak():
-    """Live T46 after #44: cities_enemy stuck at 4 (no c14_23) and own jumped 2→4.
+    """Live T46 after #46: own==2 / enemy==4, then own==3 phantom c15_12.
 
-    Game Stats Bardur 2 / Vengir 5. Fresh observe was 2/4; after /recruit +
-    /move-to, frost phantoms c15_15 + c15_12 (gold leak, ww≈30) became own.
-    Light wine-grey c14_23 (g>72) must salvage as the 5th enemy; gold-leaked
-    fragments must not sticky-grow own. ×≥3 frames stay 2/5.
+    Game Stats Bardur 2 / Vengir 5. Clean observe kept Bufla+Orkork and
+    salvaged c14_23 but missed wide grey-stone c12_16. After /recruit +
+    /move-to, gold-leaked c15_12 (ww inflated ≳36, gold_n≥24, fragment
+    plate) became a 3rd own. Stay 2/5 across ×≥3 clean frames and after
+    recruit/move. No c15_12 / c15_15 in either list.
     """
     from polytopia_api.detect import as_rgb
     from polytopia_api.entities import (
@@ -3314,12 +3350,17 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
     }
     leaked_c15_12 = {
         **_frost_wood_own_phantom("c15_12", [15, 12], 540, 324),
-        "gold_n": 32, "wood_w": 30, "wood_h": 52, "wood_dens": 0.08, "warm_n": 150,
-        "n": 500, "w": 56,
+        "gold_n": 40, "wood_w": 38, "wood_h": 64, "wood_dens": 0.08, "warm_n": 180,
+        "n": 620, "w": 58,
     }
     dense_unit = {
         **_frost_wood_own_phantom("c15_15b", [15, 14], 90, 520),
         "gold_n": 97, "wood_w": 31, "wood_h": 51, "wood_dens": 0.458, "warm_n": 1484,
+        "n": 770, "w": 56,
+    }
+    inflated_dense = {
+        **_frost_wood_own_phantom("c15_15c", [15, 13], 90, 400),
+        "gold_n": 48, "wood_w": 38, "wood_h": 62, "wood_dens": 0.46, "warm_n": 1400,
         "n": 770, "w": 56,
     }
     c14 = {
@@ -3340,6 +3381,7 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
     assert not _is_real_own_hit(leaked_c15_15)
     assert not _is_real_own_hit(leaked_c15_12)
     assert not _is_real_own_hit(dense_unit)
+    assert not _is_real_own_hit(inflated_dense)
     assert _own_miss_is_dark_vengir(
         c14, sampled_tribe="bardur", col_tribe="bardur", frost_plate=True, marks=True,
         wine_n=c14["wine_n"],
@@ -3375,7 +3417,7 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
 
     # POSTOBS after /recruit + /move-to: gold-leaked frost FPs must not become own.
     post = session_cities(stabilize(
-        [dict(bufla), dict(orkork), dict(c14), leaked_c15_15, leaked_c15_12, dense_unit, *enemies],
+        [dict(bufla), dict(orkork), dict(c14), leaked_c15_15, leaked_c15_12, dense_unit, inflated_dense, *enemies],
         frame3,
         keep_missing=True,
     ))
@@ -3383,14 +3425,15 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
     en_p = {c["id"] for c in post if c.get("owner") == "enemy"}
     assert own_p == {"c7_16", "c16_24"}, post
     assert "c15_15" not in own_p and "c15_12" not in own_p
+    assert "c15_15b" not in own_p and "c15_15c" not in own_p
     assert "c14_23" in en_p and len(en_p) == 5, en_p
     post2 = session_cities(stabilize(
-        [dict(bufla), dict(orkork), dict(c14), leaked_c15_15, leaked_c15_12, dense_unit, *enemies],
+        [dict(bufla), dict(orkork), dict(c14), leaked_c15_15, leaked_c15_12, dense_unit, inflated_dense, *enemies],
         post,
         keep_missing=True,
     ))
     post3 = session_cities(stabilize(
-        [dict(bufla), dict(orkork), dict(c14), leaked_c15_15, leaked_c15_12, dense_unit, *enemies],
+        [dict(bufla), dict(orkork), dict(c14), leaked_c15_15, leaked_c15_12, dense_unit, inflated_dense, *enemies],
         post2,
         keep_missing=True,
     ))
@@ -3407,6 +3450,7 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
     _draw_gold_leaked_frost_phantom(d, 90, 520)
     _draw_gold_leaked_frost_phantom(d, 90, 360)
     _draw_gold_leaked_frost_phantom(d, 820, 560)
+    _draw_gold_leaked_frost_phantom(d, 540, 324)
     _draw_disrof_city(d, 320, 200)
     _draw_disrof_city(d, 980, 220)
     _draw_disrof_city(d, 1100, 360)
@@ -3429,17 +3473,21 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
         abs(int(c["x"]) - 90) > 40 and abs(int(c["x"]) - 820) > 40
         for c in own
     ), own
+    assert all(
+        abs(int(c["x"]) - 540) > 40 or abs(int(c.get("plate_y") or c["y"]) - 324) > 50
+        for c in own
+    ), own
     vengir = [c for c in enemy if c.get("tribe") == "vengir"]
     assert len(vengir) >= 5, mapped["cities"]
     assert any(abs(int(c["x"]) - 500) < 55 for c in vengir), enemy
     sticky = session_cities(stabilize(list(mapped["cities"]), list(mapped["cities"]), keep_missing=True))
     sticky2 = session_cities(stabilize(
-        list(mapped["cities"]) + [leaked_c15_15, leaked_c15_12, dense_unit],
+        list(mapped["cities"]) + [leaked_c15_15, leaked_c15_12, dense_unit, inflated_dense],
         sticky,
         keep_missing=True,
     ))
     sticky3 = session_cities(stabilize(
-        list(mapped["cities"]) + [leaked_c15_15, leaked_c15_12, dense_unit],
+        list(mapped["cities"]) + [leaked_c15_15, leaked_c15_12, dense_unit, inflated_dense],
         sticky2,
         keep_missing=True,
     ))
@@ -3447,7 +3495,7 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
         own_ids = {c["id"] for c in frame if c.get("owner") == "own"}
         assert len(own_ids) == 2, frame
         assert "c15_15" not in own_ids and "c15_12" not in own_ids
-        assert "c15_15b" not in own_ids
+        assert "c15_15b" not in own_ids and "c15_15c" not in own_ids
         assert len([c for c in frame if c.get("owner") == "enemy" and c.get("tribe") == "vengir"]) >= 5
 
 

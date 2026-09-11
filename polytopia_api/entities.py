@@ -964,7 +964,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         if own:
             # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
             # but a lettered full plate still counts when the star clustered onto a
-            # neighbor. Fruit-gold / cool mountain / tiny frost splits are ghosts.
+            # neighbor. Mid-dense low-gold (any width) is Vengir grey stone — live
+            # T46 after #46 dropped ww≈47 c12_16 and cities_enemy stayed 4.
             warm_n, wood_w, wood_h, wood_dens = _bardur_wood_stats(arr, cx, cy, bw, up)
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
             # #32's warm_n>=500 floor ate live Bufla/Orkork (cities_own 1→0).
@@ -1281,11 +1282,14 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     if a.get("owner") == "own" and b.get("owner") == "own":
         def _own_score(c: dict[str, Any]) -> tuple:
             ev = c.get("evidence") or []
+            # Mid-dense grey-stone fragments can have higher warm_n than a
+            # sparse longhouse (live Orkork gold-star half vs c16_24).
             return (
-                int(c.get("warm_n") or 0),
+                0 if _own_wood_is_grey_stone_mass(c) else 1,
+                1 if _is_real_own_hit({**c, "owner": "own"}) else 0,
                 int(c.get("n") or 0),
-                int(c.get("wood_h") or 0),
                 int(c.get("w") or 0),
+                int(c.get("wood_h") or 0),
                 1 if "gold_star" in ev or "gold_lamps" in ev else 0,
             )
 
@@ -1345,12 +1349,12 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
 
 
 def _own_wood_footprint(c: dict[str, Any]) -> bool:
-    """Bufla/Orkork longhouse wood — independent of plate n/w and gold lamps.
+    """Bufla/Orkork longhouse wood bbox — independent of plate n/w.
 
-    Live T46 after #45: grey_stone / wine salvage stole a ww≈47 longhouse
-    (Bufla hashed as c12_16) and #45's dens<0.34 gate required plate n/w
-    even when gold_n≥24, dropping the other own city from both lists.
-    Frost/wood FPs stay below ww=36 (c15_15 leak ww≈30).
+    Sparse live wood is ww≳36 wh≳60 dens≈0.08. Mid-dense grey stone can be
+    just as wide (live T46 c12_16 ww≈47 dens=0.277) — that is not a keep
+    signal by itself. Frost/wood FPs after /recruit gold-leak can also
+    inflate to ww≳36 (live c15_12).
     """
     return (
         int(c.get("wood_w") or 0) >= 36
@@ -1364,25 +1368,25 @@ def _own_wood_is_grey_stone_mass(c: dict[str, Any]) -> bool:
     """Vengir grey stone matches Bardur wood; live c12_16 is not a longhouse.
 
     Live Game Stats Bardur 2 / Vengir 5: c12_16 @(441,455) warm=936 wood_h=72
-    dens=0.277 gold_n=5 counted as own. Bufla/Orkork are sparse (dens≈0.08–0.09)
-    with roof lamps (gold_n 68–116). Synthetic solid longhouses are denser
-    still (dens≳0.45) with gold_n=0. Dict fixtures omit gold_n — not this.
-    Never a warm_n>=500 keep-floor. After #45 the same tile came back with
-    longhouse width (ww≈47) — that is Bufla, not a narrow grey slat (ww≈32).
+    dens=0.277 gold_n=5. After #46 a ww≳36 gate treated that as Bufla, so
+    find_cities dropped it (not grey_stone, not city-sized sparse own) and
+    cities_enemy stayed 4. Width does not matter — Bufla/Orkork are sparse
+    (dens≈0.08–0.09) with roof lamps (gold_n 68–116). Synthetic solid
+    longhouses are denser still (dens≳0.45) with gold_n=0. Dict fixtures
+    omit gold_n — not this. Never a warm_n>=500 keep-floor.
     """
     if c.get("gold_n") is None or c.get("wood_dens") is None:
-        return False
-    if _own_wood_footprint(c):
         return False
     dens = float(c.get("wood_dens") or 0)
     gold_n = int(c.get("gold_n") or 0)
     wh = int(c.get("wood_h") or 0)
-    ww = int(c.get("wood_w") or 0)
-    # Mid-density tall NARROW mass, almost no building lamps. Live slat
-    # c12_16 dens=0.277 ww=32. A ww≳36 longhouse must stay own.
-    # Scaled synthetic longhouses land dens≳0.40 (1920) / ≳0.45 (1280) with
-    # gold_n=0 — must stay own. Short unit frost (wh<34) stays a drop.
-    return gold_n < 16 and 0.16 <= dens < 0.34 and wh >= 50 and ww < 36
+    # Mid-density tall mass, almost no building lamps. Live c12_16
+    # dens=0.277 ww≈32–47. Width is not a keep/drop: #46's ww<36 missed
+    # the wide 5th Vengir; skinny leftovers beside Distop (ww≈9) are still
+    # that city. Split halves of Bufla/Orkork (ww≈13, ~40px from the
+    # longhouse) are dropped later. Sparse longhouses (dens≈0.08) stay own.
+    # Scaled synthetic longhouses land dens≳0.40 / gold_n=0 — must stay own.
+    return gold_n < 16 and 0.16 <= dens < 0.34 and wh >= 50
 
 
 def _sparse_own_longhouse(c: dict[str, Any]) -> bool:
@@ -1394,6 +1398,8 @@ def _sparse_own_longhouse(c: dict[str, Any]) -> bool:
     wider AND taller (Bufla/Orkork ww≳36 wh≳60 warm≳140 dens≳0.06, plate
     w≳70 or n≳900). Dict fixtures that omit plate n/w stay wood-only.
     """
+    if _own_wood_is_grey_stone_mass(c):
+        return False
     if not _own_wood_footprint(c):
         return False
     # Already-vetted dict fixtures omit plate size.
@@ -1416,19 +1422,20 @@ def _own_miss_is_dark_vengir(
     Live after #43/#44: c14_23 (frost+star, gold_n<24) vanished because
     sampled_tribe *and* col_tribe were bardur (wine-grey stone). #44's
     wine_n>=8 + g<=72 still missed live veins (g≈74–86). Count lighter
-    wine-grey. Real Orkork/Bufla longhouses stay own — never steal a
-    ww≳36 footprint into cities_enemy.
+    wine-grey. Real Orkork/Bufla (city-sized sparse gold-lamp longhouses)
+    stay own. Mid-dense low-gold at ww≳36 is grey stone, not Bufla
+    (live T46 after #46: c12_16 vanished and enemy stayed 4).
     """
     if not frost_plate or not marks:
         return False
     gold = int(rec.get("gold_n") or 0)
     if gold >= 24:
         return False
-    # Split-plate longhouses fail _sparse_own_longhouse's n/w floor; still own.
-    if _own_wood_footprint(rec) or _sparse_own_longhouse(rec):
-        return False
     dens = float(rec.get("wood_dens") or 0)
     if dens >= 0.34:
+        return False
+    # City-sized sparse longhouses stay own even when wine-shadow ticks.
+    if _sparse_own_longhouse(rec) and dens < 0.16:
         return False
     if sampled_tribe == "vengir" or col_tribe == "vengir":
         return True
@@ -1437,8 +1444,8 @@ def _own_miss_is_dark_vengir(
     if int(wine_n or 0) >= WINE_SALVAGE_MIN:
         return True
     # After #45 wine_n==0 on the live frame. City-sized frost+star that is
-    # not a longhouse (ww<36) is still the missing 5th Vengir. Frost FPs
-    # are smaller (n≈500 w≈56) and stay dropped.
+    # not a sparse longhouse is still the missing 5th Vengir (including
+    # ww≳36 mid-dense grey stone). Frost FPs are smaller (n≈500 w≈56).
     return int(rec.get("w") or 0) >= 70 or int(rec.get("n") or 0) >= 900
 
 
@@ -1475,10 +1482,11 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     longhouses (dens≳0.34, gold_n=0) or sparse live longhouses (Orkork
     c16_24: ww≳36 wh≳60 warm≳140 dens≳0.06, plate w≳70 even when gold_n<24).
     After /recruit or /move-to, leaked gold (gold_n≥24) on the same fragment
-    (ww≈30 dens≈0.08) used to pass this gate and sticky-grow own 2→4. A dense
-    unit-sized blob (ww≈31 dens≈0.46 gold_n≥24) is not a synthetic longhouse.
-    Gold does not skip the longhouse footprint. Dict fixtures omit wood_* —
-    treat those as already-vetted cities.
+    (ww≈30 dens≈0.08, and live T46 after #46: c15_12 with ww inflated ≳36)
+    used to pass this gate and sticky-grow own 2→3. A dense unit-sized blob
+    (ww≈31 dens≈0.46 gold_n≥24) is not a synthetic longhouse. Gold does not
+    skip the city-sized plate. Split-plate longhouses merge earlier / stay
+    sticky. Dict fixtures omit wood_* — treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
         return True
@@ -1499,21 +1507,20 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     if c.get("gold_n") is not None:
         gold = int(c.get("gold_n") or 0)
         ww = int(c.get("wood_w") or 0)
-        # Sparse live longhouse keeps via the wood footprint even when gold_n
-        # is 0, occluded, *or* inflated by recruit/move gold leak.
+        nw = int(c.get("n") or 0)
+        bw = int(c.get("w") or 0)
+        # Sparse live longhouse keeps via city-sized plate (n≥900 or w≥70)
+        # even when gold_n is 0, occluded, *or* inflated by recruit/move leak.
         # Compact / synthetic longhouses keep via dens≳0.34 even when gold_n=0
         # (scaled 1280 `_draw_bardur_city` n≈700 w≈55). A gold-leaked unit
-        # blob (ww≈31 dens≈0.46 gold_n≥24) is not that.
+        # blob (ww≈31 dens≈0.46 gold_n≥24) is not that. After #46, gold≥24
+        # plus a ww≳36 footprint alone let c15_12 become a 3rd own.
         if dens < 0.34:
-            # Roof lamps (gold_n≥24) on a real longhouse: the gold-star hole
-            # can split plate n/w below _sparse_own_longhouse. Keep the wood
-            # footprint. Gold-leaked frost FPs are narrower (ww≈30).
-            if gold >= 24:
-                if not _own_wood_footprint(c):
-                    return False
-            elif not _sparse_own_longhouse(c):
+            if not _sparse_own_longhouse(c):
                 return False
         elif gold >= 24 and ww < 36:
+            return False
+        elif gold >= 24 and dens >= 0.34 and nw < 900 and bw < 70:
             return False
         # Narrow unit column (even a dense leather blob) is not a longhouse.
         if ww < 28 and gold < 24:
@@ -1529,10 +1536,10 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
     Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). #32's warm_n>=500
     floor left cities_own 1→0. Close-plate merge is capped at 48px so ~80px
     neighbors stay two. Short/sparse, tall-empty, tall-dense-low-gold
-    (c12_16 dens≈0.28 gold_n≈5 / c17_14), *and* frost/wood plates with a
-    gold star but no building lamps *and* no longhouse wood (c15_15 /
-    c15_12 / c15_24), including after /recruit+/move-to gold leak
-    (gold_n≥24 on ww≈30), still drop from own. Orkork/c16_24 stays.
+    (c12_16 dens≈0.28 gold_n≈5 ww≈32–47 / c17_14), *and* frost/wood plates
+    with a gold star but no city-sized longhouse (c15_15 / c15_12 / c15_24),
+    including after /recruit+/move-to gold leak (gold_n≥24 on ww≈30 or a
+    ww≳36 inflated fragment), still drop from own. Orkork/c16_24 stays.
     """
     if c.get("owner") != "own":
         return False
@@ -1671,9 +1678,40 @@ def _drop_split_plate_own(cities: list[dict[str, Any]], dist: int = 56) -> list[
     return out
 
 
+def _drop_grey_splits_near_own(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
+    """Gold-star halves of a Bardur longhouse are not a 6th Vengir.
+
+    Mid-dense low-gold (any width) is grey stone so live ww≈47 c12_16 stays
+    the 5th enemy. The same signature on a skinny fragment ~40px from Bufla
+    or Orkork is the gold-star hole, not a city.
+    """
+    owns = [c for c in cities if c.get("owner") == "own" and _is_real_own_hit(c)]
+    if not owns:
+        return cities
+    out: list[dict[str, Any]] = []
+    for c in cities:
+        ev = c.get("evidence") or []
+        if (
+            c.get("owner") == "enemy"
+            and "grey_stone" in ev
+            and "magenta_roof" not in ev
+            and "gold_lamps" not in ev
+        ):
+            if any(_city_sep2(c, o) <= dist * dist for o in owns):
+                continue
+        out.append(c)
+    return out
+
+
 def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every real enemy city. A 12-own map must not empty cities_enemy."""
-    cities = _cap_vengir(_drop_own_phantoms(_drop_split_plate_own(_dedupe_cities(cities))))
+    cities = _cap_vengir(
+        _drop_grey_splits_near_own(
+            _dedupe_cities(
+                _drop_split_plate_own(_drop_own_phantoms(list(cities)))
+            )
+        )
+    )
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     other = [c for c in cities if c.get("owner") not in {"own", "enemy"}]
