@@ -336,7 +336,11 @@ def attach_units_near_cities(
     units: list[dict[str, Any]],
     cities: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Pick up warriors whose HP bar hides under a nameplate (mountain south of Disrof)."""
+    """Pick up warriors whose HP bar hides under a nameplate.
+
+    Mountain-south of Disrof (T36) and port-east (T37) both count. City
+    building wood is not a unit.
+    """
     if not cities:
         _tag_near_cities(units, cities, (arr.shape[1], arr.shape[0]))
         return units
@@ -371,11 +375,15 @@ def attach_units_near_cities(
             lime_n, lx, ly = _lime_in_patch(arr, sx, sy - max(4, pitch // 5), rad)
             leather_n, bx, by = (0, sx, sy)
             # City buildings are Bardur-wood / grey stone — never mint a unit
-            # from the building itself. Leather centroid must sit SOUTH of the
-            # nameplate (live: mountain immediately south of Disrof).
-            if not on_city and sy >= plate_y - 2:
+            # from the building column. East-port / south-mountain centroids
+            # sit off that column (live T37 port-east of Disrof).
+            if not on_city:
                 leather_n, bx, by = _leather_in_patch(arr, sx, sy, rad)
-                if by < plate_y + 2:
+                on_building = (
+                    abs(bx - int(origin[0])) < max(10, pitch // 3)
+                    and by <= plate_y + 4
+                )
+                if on_building:
                     leather_n = 0
             if lime_n < 3 and leather_n < 10:
                 continue
@@ -551,14 +559,43 @@ def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tup
     """Column above the frost plate — this city's building, not a neighbor.
 
     Plate clustering can sit a few px left of the roof; bw/3 missed Disrof magenta.
+    A full plate-half (~60px) also ate the east-port warrior (live T37).
     """
     h, w = arr.shape[:2]
-    half = max(22, bw // 2)
+    half = max(22, min(32, max(bw // 3, bw // 4 + 8)))
     x0 = max(0, cx - half)
     x1 = min(w, cx + half + 1)
     y0 = max(0, cy - up * 2 - 16)
     y1 = max(y0 + 1, min(h, cy - 10))
     return x0, x1, y0, y1
+
+
+def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[str, list[int]]:
+    """Tribe of the building itself. Skip lime HP bars and water (garrison / port)."""
+    x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
+    crop = arr[y0:y1, x0:x1]
+    rgb = sample(arr, cx, max(0, (y0 + y1) // 2))
+    if crop.size == 0:
+        return classify_tribe(rgb), rgb
+    lime = _hp_green_mask(crop)
+    votes: dict[str, int] = {}
+    for py in range(crop.shape[0]):
+        for px in range(crop.shape[1]):
+            if lime[py, px]:
+                continue
+            pix = [int(v) for v in crop[py, px]]
+            if is_water_rgb(*pix):
+                continue
+            t = classify_tribe(pix)
+            if t != "unknown":
+                votes[t] = votes.get(t, 0) + 1
+    if not votes:
+        return classify_tribe(rgb), rgb
+    vengir_n = votes.get("vengir", 0)
+    total = sum(votes.values())
+    if vengir_n >= 8 or (total and vengir_n >= 0.08 * total):
+        return "vengir", rgb
+    return max(votes, key=votes.get), rgb
 
 
 def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
@@ -645,12 +682,17 @@ def _disrof_signal(
     frost_plate: bool = False,
     plate_window_n: int = 0,
 ) -> bool:
-    """Live Disrof: magenta roof, building lamps, or gold windows on the frost plate."""
+    """Live Disrof: magenta roof, building lamps, or gold windows on the frost plate.
+
+    A garrison / adjacent unit eats some magenta; 8px was enough to drop T37.
+    """
     if roof_n >= 8:
+        return True
+    if frost_plate and roof_n >= 4:
         return True
     if not frost_plate:
         return False
-    return gold_n >= 16 or plate_window_n >= 12
+    return gold_n >= 8 or plate_window_n >= 8
 
 
 
@@ -707,20 +749,26 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         if bw / bh < (1.15 if marks else 1.55):
             continue
-        if not _plate_contrast(arr, cx, cy, bw, bh):
-            continue
-        sampled_tribe, rgb = sample_patch_tribe(
-            arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14
-        )
-        tribe = sampled_tribe
-        if is_water_rgb(*rgb):
-            continue
         roof_n = _vengir_roof_pixels(arr, cx, cy, bw, up)
         gold_n = _gold_window_pixels(arr, cx, cy, bw, up)
         frost_plate = _plate_is_frost(arr, cx, cy, bw, bh)
         plate_win_n, _plate_star_n = _plate_gold_split(arr, cx, cy, bw, bh)
         strong_vengir = _disrof_signal(roof_n, gold_n, frost_plate, plate_win_n)
-        if strong_vengir:
+        # Adjacent unit on the plate can kill letter-contrast; Disrof still counts.
+        if not _plate_contrast(arr, cx, cy, bw, bh) and not strong_vengir:
+            continue
+        sampled_tribe, rgb = sample_patch_tribe(
+            arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14
+        )
+        col_tribe, col_rgb = _column_tribe(arr, cx, cy, bw, up)
+        tribe = sampled_tribe
+        if is_water_rgb(*rgb):
+            rgb = col_rgb
+            if not strong_vengir and col_tribe != "vengir":
+                continue
+        if strong_vengir or (
+            frost_plate and (roof_n >= 4 or gold_n >= 8 or plate_win_n >= 8)
+        ):
             tribe = "vengir"
         elif tribe == "vengir":
             # Purple noise without a magenta roof / lamps: grey Bardur wood stays own.
@@ -762,9 +810,9 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         evidence: list[str] = []
         if frost_plate:
             evidence.append("frost_plate")
-        if roof_n >= 8:
+        if roof_n >= 8 or (strong_vengir and roof_n >= 4):
             evidence.append("magenta_roof")
-        if gold_n >= 8 or plate_win_n >= 12:
+        if gold_n >= 8 or plate_win_n >= 8:
             evidence.append("gold_lamps")
         if marks and "gold_lamps" not in evidence:
             evidence.append("gold_star")

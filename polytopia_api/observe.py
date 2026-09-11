@@ -163,11 +163,23 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
     src_tribe = str(src.get("tribe") or "")
     dst_tribe = str(d.get("tribe") or "")
     # Keep frost-plate Disrof as enemy. A later grey-stone sample must not
-    # invent cities_own from the same city_id.
+    # invent cities_own from the same city_id — including when a friendly
+    # unit stands on the port/mountain next to it.
     if src_tribe == "vengir" and str(src.get("owner") or "") == "enemy":
-        if dst_tribe in {"oumaji", "bardur", "unknown", ""}:
+        if dst_tribe in {"oumaji", "bardur", "unknown", ""} or str(d.get("owner") or "") == "own":
             d["tribe"] = "vengir"
             d["owner"] = "enemy"
+        ev = list(src.get("evidence") or [])
+        if ev:
+            cur = list(d.get("evidence") or [])
+            for item in ev:
+                if item not in cur:
+                    cur.append(item)
+            d["evidence"] = cur
+        if src.get("tile") and not d.get("tile"):
+            d["tile"] = list(src["tile"])
+        if src.get("tile_xy") and not d.get("tile_xy"):
+            d["tile_xy"] = list(src["tile_xy"])
     elif src_tribe == "vengir" and dst_tribe == "oumaji":
         d["tribe"] = "vengir"
         d["owner"] = "own" if str(src.get("owner") or "") == "own" else "enemy"

@@ -279,6 +279,48 @@ def _stood_on_city(
     }
 
 
+def _prefer_live_hit(hit: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Do not click a sticky ghost (seen=false) when a live unit is on screen.
+
+    Live T36: select of u25 hit sticky+settings/dock OCR, can_move false, and
+    the mountain warrior never walked onto Disrof.
+    """
+    if not hit or hit.get("seen") is not False:
+        return hit
+    if hit.get("kind") == "city" or hit.get("plate_y") is not None:
+        return hit
+    mem = remember()
+    units = list((mem or {}).get("units") or [])
+    uid = str(hit.get("id") or "")
+    tile = hit.get("tile")
+    for u in units:
+        if u.get("seen") is False:
+            continue
+        if uid and str(u.get("id") or "") == uid:
+            return u
+        if tile is not None and u.get("tile") == tile:
+            return u
+    try:
+        hx, hy = int(hit["x"]), int(hit["y"])
+    except (KeyError, TypeError, ValueError):
+        return hit
+    best = None
+    best_d = 96
+    for u in units:
+        if u.get("seen") is False:
+            continue
+        if str(u.get("owner") or "") not in {"own", "unknown", ""}:
+            continue
+        try:
+            d = abs(int(u["x"]) - hx) + abs(int(u["y"]) - hy)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d < best_d:
+            best_d = d
+            best = u
+    return best or hit
+
+
 def select_unit(
     x: int | None = None,
     y: int | None = None,
@@ -291,7 +333,7 @@ def select_unit(
     hit = None
     ident = id or city_id
     if ident:
-        hit = _resolve(ident, space)
+        hit = _prefer_live_hit(_resolve(ident, space))
         if not hit:
             return _fail("select_unit", f"no entity {ident}")
         x, y = _entity_click_xy(hit)
@@ -301,6 +343,21 @@ def select_unit(
     clicked = _click(x, y, space=space)
     _sleep(SELECT_LIGHT_SLEEP_S if light else 0.4)
     after = observe(mode="marks" if light else "full")
+    panel = after.get("unit") or {}
+    # Settings/dock OCR means the click missed the warrior (ghost sticky / HP bar).
+    if (
+        hit
+        and hit.get("kind") == "unit"
+        and (panel.get("settings") or not (panel.get("can_move") or panel.get("unit")))
+        and not panel.get("capture")
+        and not panel.get("train")
+    ):
+        body_y = int(hit.get("y") or y) + 10
+        if abs(body_y - int(y)) >= 4:
+            clicked = _click(int(hit.get("x") or x), body_y, space="screen")
+            _sleep(SELECT_LIGHT_SLEEP_S if light else 0.35)
+            after = observe(mode="marks" if light else "full")
+            panel = after.get("unit") or {}
     return {
         "ok": True,
         "name": "select_unit",
@@ -309,7 +366,7 @@ def select_unit(
         "hit": hit,
         "x": clicked["x"],
         "y": clicked["y"],
-        "unit": after.get("unit"),
+        "unit": panel,
         "move_marks": after.get("move_marks"),
         "attack_marks": after.get("attack_marks"),
         "ready": after.get("ready"),
