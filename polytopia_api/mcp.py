@@ -70,7 +70,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_attack",
-        "description": "Attack the city garrison: select from_id, click a red hex on city_id. hp_dropped until garrison_dead, then next=/move-to. Rafts cannot hit land — response suggests a land attacker_id.",
+        "description": "Attack the city garrison: select from_id, wait for the red hex, click the city foot (not the HP bar). If HP stays, re-select and retry. hp_dropped until garrison_dead, then next=/move-to. Rafts cannot hit land — response suggests a land attacker_id.",
         "inputSchema": {
             "type": "object",
             "properties": {

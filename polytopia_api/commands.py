@@ -323,7 +323,11 @@ def _find_attack_mark(
     arr=None,
     extra_xy: list[tuple[int, int]] | None = None,
 ) -> tuple[dict[str, Any] | None, float | None]:
-    """Red hex on the city tile — foot first, not the garrison HP bar."""
+    """Red hex on the city tile — foot first, not the garrison HP bar.
+
+    Clustered centroids sit on the HP bar / roof; remap them to the walk
+    foot before returning so /attack actually lands.
+    """
     points: list[tuple[int, int]] = []
     if dest:
         walk = combat.city_walk_center(dest, frame)
@@ -343,15 +347,132 @@ def _find_attack_mark(
             best = mark
             best_d = d
     if best is not None:
+        aimed = combat.city_attack_aim(best, dest, frame) if dest else None
+        if aimed and (int(best["x"]), int(best["y"])) != (int(aimed[0]), int(aimed[1])):
+            return {
+                **best,
+                "x": int(aimed[0]),
+                "y": int(aimed[1]),
+                "aimed": "city_foot",
+                "centroid": [int(best["x"]), int(best["y"])],
+            }, round(best_d, 3)
         return best, round(best_d, 3)
     if arr is None:
         return None, None
     pitch = combat.hex_pitch(*frame)
     for px, py in points:
-        tint = detect.attack_tint_at(arr, px, py, radius=max(14, pitch // 2))
+        hit = detect.attack_on_hex(arr, px, py, pitch, min_n=5)
+        if hit.get("ok"):
+            return {
+                "n": hit.get("n"),
+                "ok": True,
+                "x": px,
+                "y": py,
+                "kind": "attack_hex",
+                "aimed": "city_foot",
+                "centroid": [hit["x"], hit["y"]],
+            }, 0.0
+    for px, py in points:
+        tint = detect.attack_tint_at(arr, px, py, radius=max(14, pitch // 2), min_n=5)
         if tint.get("ok"):
-            return tint, 0.0
+            return {**tint, "aimed": "city_foot"}, 0.0
     return None, None
+
+
+def _attack_aim_points(
+    dest: dict[str, Any] | None,
+    frame: tuple[int, int],
+    mark: dict[str, Any] | None,
+) -> list[tuple[int, int]]:
+    """City-foot pixels for the red hex. HP-bar clicks do not attack."""
+    pts: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def _add(xy: tuple[int, int] | None) -> None:
+        if not xy:
+            return
+        key = (int(xy[0]), int(xy[1]))
+        if key in seen:
+            return
+        seen.add(key)
+        pts.append(key)
+
+    _add(combat.city_attack_aim(mark, dest, frame) if dest else None)
+    walk = combat.city_walk_center(dest, frame) if dest else None
+    _add(walk)
+    if walk:
+        _add((walk[0], walk[1] + 6))
+        _add((walk[0], walk[1] + 12))
+    if mark is not None:
+        try:
+            mx, my = int(mark["x"]), int(mark["y"])
+        except (KeyError, TypeError, ValueError):
+            mx = my = None
+        if mx is not None and (not walk or my >= walk[1] - 4):
+            _add((mx, my))
+    return pts
+
+
+def _hp_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    if before.get("id") and not after.get("id"):
+        return True
+    if (
+        before.get("hp") is not None
+        and after.get("hp") is not None
+        and before.get("hp") != after.get("hp")
+    ):
+        return True
+    if (
+        before.get("kind") != "city"
+        and isinstance(before.get("n"), int)
+        and isinstance(after.get("n"), int)
+        and after["n"] < before["n"]
+    ):
+        return True
+    return False
+
+
+def _confirm_hp_drop(
+    before: dict[str, Any],
+    dest: dict[str, Any] | None,
+    ident: str | None,
+    x: int,
+    y: int,
+    t0: float,
+    first_sleep: float = 0.4,
+    polls: int = 2,
+    interval: float = 0.3,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Wait for the strike animation, then verify garrison HP actually dropped.
+
+    Live T41: /attack clicked a red cluster on the HP bar, slept 0.25s, and
+    returned hp_dropped:false while the Vengir garrison was still full.
+    """
+    hp_before = _hp_snapshot(before, ident, x, y)
+    _sleep(first_sleep)
+    after = observe(mode="marks")
+    if dest:
+        register_cities([dest])
+    hp_after = _hp_snapshot(after, ident, x, y)
+    if _hp_changed(hp_before, hp_after):
+        return after, hp_after, True
+    still = _enemy_garrison(after, dest, _frame(after)) if dest else None
+    if still is None and hp_before.get("id"):
+        return after, hp_after, True
+    for _ in range(polls):
+        if time.time() - t0 >= ATTACK_BUDGET_S:
+            break
+        _sleep(interval)
+        after = observe(mode="marks")
+        if dest:
+            register_cities([dest])
+        hp_after = _hp_snapshot(after, ident, x, y)
+        if _hp_changed(hp_before, hp_after):
+            return after, hp_after, True
+        still = _enemy_garrison(after, dest, _frame(after)) if dest else None
+        if still is None and hp_before.get("id"):
+            return after, hp_after, True
+    return after, hp_after, False
 
 
 def _relive_select(
@@ -1613,22 +1734,70 @@ def attack(
             "elapsed_s": elapsed,
             "unit": panel,
         }
-    frame = _frame(before)
-    garrison = (
-        combat.garrison_unit(before.get("units") or [], dest, frame, max_hex=0.9)
-        if dest else None
-    )
-    # Red hexes sit on the TILE foot. Aiming at a tall giant's HP bar used to miss.
-    walk = combat.city_walk_center(dest, frame) if dest else None
-    center = combat.city_tile_center(dest, frame) if dest else None
-    if walk:
-        x, y = walk
-    elif center:
-        x, y = center
-    elif garrison:
-        x, y = int(garrison["x"]), int(garrison["y"])
-    elif dest:
-        x, y = int(dest["x"]), int(dest["y"])
+
+    def _refresh_aim(obs: dict[str, Any]):
+        frame_now = _frame(obs)
+        garrison_now = (
+            combat.garrison_unit(obs.get("units") or [], dest, frame_now, max_hex=0.9)
+            if dest else None
+        )
+        walk_now = combat.city_walk_center(dest, frame_now) if dest else None
+        center_now = combat.city_tile_center(dest, frame_now) if dest else None
+        ax = ay = None
+        if walk_now:
+            ax, ay = walk_now
+        elif center_now:
+            ax, ay = center_now
+        elif garrison_now:
+            ax, ay = int(garrison_now["x"]), int(garrison_now["y"])
+        elif dest:
+            ax, ay = int(dest["x"]), int(dest["y"])
+        elif x is not None and y is not None:
+            ax, ay = int(x), int(y)
+        marks_now = list(
+            obs.get("attack_marks")
+            or (obs.get("overlay") or {}).get("attack_marks")
+            or []
+        )
+        if not marks_now and selected:
+            marks_now = list(selected.get("attack_marks") or [])
+        extra_now: list[tuple[int, int]] = []
+        if ax is not None:
+            extra_now.append((int(ax), int(ay)))
+        if garrison_now:
+            extra_now.append((int(garrison_now["x"]), int(garrison_now["y"])))
+        arr_now = _shot_arr(obs)
+        mark_now, dist_now = _find_attack_mark(
+            marks_now, dest, frame_now, arr_now, extra_xy=extra_now,
+        )
+        fx_now = fy_now = None
+        if from_id:
+            src_now = lookup(obs, from_id) or lookup_unit(from_id)
+            if src_now:
+                fx_now, fy_now = int(src_now["x"]), int(src_now["y"])
+        elif from_x is not None:
+            fx_now, fy_now = int(from_x), int(from_y)
+        panel_now = obs.get("unit") or panel
+        verdict_now = combat.can_strike(
+            panel_now.get("unit"),
+            (fx_now, fy_now) if fx_now is not None else None,
+            (int(ax), int(ay)) if ax is not None else None,
+            (dest or {}).get("kind"),
+            frame_now,
+            marks_now,
+        )
+        if mark_now is None:
+            mark_now = verdict_now.get("red_mark")
+            dist_now = None
+        occ_now = _occupied_fields(
+            obs, dest, frame_now, from_id, city_id or ident, garrison=garrison_now,
+        ) if dest else {}
+        return (
+            frame_now, (ax, ay), marks_now, garrison_now, arr_now,
+            mark_now, dist_now, verdict_now, occ_now, panel_now,
+        )
+
+    frame, (x, y), marks, garrison, arr, mark, d_hex, verdict, occ, panel = _refresh_aim(before)
     if x is None or y is None:
         return {
             "ok": False,
@@ -1636,34 +1805,29 @@ def attack(
             "reason": "need to_id/city_id or x,y",
             "elapsed_s": elapsed,
         }
-    marks = list(before.get("attack_marks") or (before.get("overlay") or {}).get("attack_marks") or [])
-    fx = fy = None
-    if from_id:
-        src = lookup(before, from_id) or lookup_unit(from_id)
-        if src:
-            fx, fy = int(src["x"]), int(src["y"])
-    elif from_x is not None:
-        fx, fy = int(from_x), int(from_y)
-    verdict = combat.can_strike(
-        panel.get("unit"),
-        (fx, fy) if fx is not None else None,
-        (x, y),
-        (dest or {}).get("kind"),
-        frame,
-        marks,
-    )
+    # Light select (0.18s) often screenshots before the garrison hex turns red.
+    if mark is None and arr is not None and _elapsed() < ATTACK_BUDGET_S - 2:
+        _sleep(0.28)
+        before = observe(mode="marks")
+        if dest:
+            register_cities([dest])
+        panel = before.get("unit") or panel
+        if panel.get("no_actions"):
+            return {
+                "ok": False,
+                "name": "attack",
+                "reason": "no_actions",
+                "hint": "selected unit has no actions — do not reuse stale red marks",
+                "from_id": from_id,
+                "to_id": to_id or city_id,
+                "dest": dest,
+                "selected": selected,
+                "attack_marks": [],
+                "elapsed_s": _elapsed(),
+                "unit": panel,
+            }
+        frame, (x, y), marks, garrison, arr, mark, d_hex, verdict, occ, panel = _refresh_aim(before)
     hp_before = _hp_snapshot(before, to_id or city_id, x, y)
-    extra: list[tuple[int, int]] = [(int(x), int(y))]
-    if garrison:
-        extra.append((int(garrison["x"]), int(garrison["y"])))
-    arr = _shot_arr(before)
-    mark, d_hex = _find_attack_mark(marks, dest, frame, arr, extra_xy=extra)
-    if mark is None:
-        mark = verdict.get("red_mark")
-        d_hex = None
-    occ = _occupied_fields(
-        before, dest, frame, from_id, city_id or ident, garrison=garrison,
-    ) if dest else {}
     if verdict.get("reason") == "naval_no_land":
         land = occ.get("attacker_id")
         hint = verdict.get("hint") or "raft/ship cannot attack a land city — disembark first"
@@ -1710,41 +1874,55 @@ def attack(
             "elapsed_s": round(time.time() - t0, 3),
             "unit": panel,
         }
-    clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
-    if _elapsed() >= ATTACK_BUDGET_S:
-        return {
-            "ok": True,
-            "name": "attack",
-            "from_id": from_id,
-            "to_id": ident,
-            "city_id": dest.get("id") if dest else city_id,
-            "x": clicked["x"],
-            "y": clicked["y"],
-            "clicked_mark": mark,
-            "hp_before": hp_before,
-            "hp_dropped": False,
-            "garrison_dead": False,
-            "reason": "timeout",
-            "hint": "clicked red mark but skipped post-observe to stay under 8s",
-            "elapsed_s": _elapsed(),
-            "garrison": garrison,
-            "aim": [x, y],
-        }
-    _sleep(0.25)
-    after = observe(mode="marks")
-    hp_after = _hp_snapshot(after, to_id or city_id, x, y)
+    aims = _attack_aim_points(dest, frame, mark)[:3]
+    if not aims:
+        aims = [(int(mark["x"]), int(mark["y"]))]
+    clicked = {"ok": True, "x": aims[0][0], "y": aims[0][1]}
+    after = before
+    hp_after = hp_before
     hp_dropped = False
-    if hp_before.get("id") and not hp_after.get("id"):
-        hp_dropped = True
-    elif hp_before.get("hp") is not None and hp_after.get("hp") is not None and hp_before.get("hp") != hp_after.get("hp"):
-        hp_dropped = True
-    elif (
-        hp_before.get("kind") != "city"
-        and isinstance(hp_before.get("n"), int)
-        and isinstance(hp_after.get("n"), int)
-        and hp_after["n"] < hp_before["n"]
-    ):
-        hp_dropped = True
+    strike_retried = False
+    for i, (ax, ay) in enumerate(aims):
+        if _elapsed() >= ATTACK_BUDGET_S:
+            break
+        if i > 0:
+            strike_retried = True
+            if from_id or from_x is not None:
+                selected = select_unit(
+                    x=from_x, y=from_y, id=from_id, space=space, light=True,
+                )
+                selected = _relive_select(selected, from_id, from_x, from_y, space)
+                before = remember() or before
+                panel = before.get("unit") or panel
+                if panel.get("no_actions"):
+                    break
+        clicked = _click(int(ax), int(ay), space="screen")
+        mark = {**(mark or {}), "x": int(ax), "y": int(ay), "aimed": "city_foot"}
+        if _elapsed() >= ATTACK_BUDGET_S:
+            return {
+                "ok": True,
+                "name": "attack",
+                "from_id": from_id,
+                "to_id": ident,
+                "city_id": dest.get("id") if dest else city_id,
+                "x": clicked["x"],
+                "y": clicked["y"],
+                "clicked_mark": mark,
+                "hp_before": hp_before,
+                "hp_dropped": False,
+                "garrison_dead": False,
+                "reason": "timeout",
+                "hint": "clicked red mark but skipped post-observe to stay under 8s",
+                "elapsed_s": _elapsed(),
+                "garrison": garrison,
+                "aim": [x, y],
+                "strike_retried": strike_retried,
+            }
+        after, hp_after, hp_dropped = _confirm_hp_drop(
+            before, dest, to_id or city_id, x, y, t0,
+        )
+        if hp_dropped:
+            break
     still = _enemy_garrison(after, dest, _frame(after)) if dest else None
     if still is None and hp_after.get("id") and str(hp_after.get("kind") or "") != "city":
         still = hp_after
@@ -1775,6 +1953,7 @@ def attack(
         "hp_before": hp_before,
         "hp_after": hp_after,
         "hp_dropped": hp_dropped,
+        "strike_retried": strike_retried,
         "elapsed_s": round(time.time() - t0, 3),
         "selected": selected,
         "unit": after.get("unit"),
