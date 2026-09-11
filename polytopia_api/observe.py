@@ -200,16 +200,26 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
     elif str(src.get("owner") or "") == "own":
         # Live T46: after /recruit click, c7_16 flipped cities_own → cities_enemy.
         # A magenta speck / selection highlight must not steal Bardur mid-turn.
-        d["owner"] = "own"
-        if src_tribe:
-            d["tribe"] = src_tribe
-        ev = list(src.get("evidence") or [])
-        if ev:
-            cur = list(d.get("evidence") or [])
-            for item in ev:
-                if item not in cur:
-                    cur.append(item)
-            d["evidence"] = cur
+        # Grey-stone Vengir (live c12_16) is the opposite: do not lock a phantom
+        # as own when this frame classified it as enemy.
+        dst_enemy = str(d.get("owner") or "") == "enemy" or dst_tribe == "vengir"
+        src_own = {**src, "owner": "own"}
+        if dst_enemy and (
+            entities._own_wood_is_grey_stone_mass(src_own)
+            or not entities._is_real_own_hit(src_own)
+        ):
+            pass
+        else:
+            d["owner"] = "own"
+            if src_tribe:
+                d["tribe"] = src_tribe
+            ev = list(src.get("evidence") or [])
+            if ev:
+                cur = list(d.get("evidence") or [])
+                for item in ev:
+                    if item not in cur:
+                        cur.append(item)
+                d["evidence"] = cur
     cid = str(d.get("id") or src.get("id") or "")
     if cid:
         d["id"] = cid
