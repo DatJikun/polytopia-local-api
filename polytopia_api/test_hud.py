@@ -252,8 +252,11 @@ def test_capture_and_recruit_targets():
         "overlay": {"train_blobs": [], "train_pixel": False},
         "ready": {"train": True},
         "unit": {"train": True},
+        "layout": {"frame": [1280, 800]},
     }
-    assert recruit_target(ocr_only) is None
+    # OCR Train with no blob → UNIT_CROP panel, never scaled map TRAIN.
+    panel_xy = recruit_target(ocr_only)
+    assert panel_xy is not None and panel_xy[1] >= int(800 * 0.78) and panel_xy[0] <= int(1280 * 0.52)
     plate = _city_click_points({"x": 10, "y": 40, "plate_y": 80, "kind": "city"})
     assert plate[0] == (10, 80, "plate")
     assert plate[1] == (10, 40, "building")
@@ -1864,6 +1867,60 @@ def test_recruit_uses_marks_observe_for_train():
     reset_obs()
 
 
+def test_recruit_clicks_city_foot_when_plate_misses_train():
+    """Live T46: plate/building/plate_below ran; TRAIN opened on the city tile."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c7_16",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [7, 16],
+        "tile_xy": [200, 80],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int, str]] = []
+    n_obs = {"n": 0}
+
+    def fake_observe(*args, **kwargs):
+        n_obs["n"] += 1
+        # First clicks are plate/building/below; TRAIN appears after roof/foot.
+        opened = n_obs["n"] >= 3
+        return {
+            "layout": {"frame": [1280, 800]},
+            "overlay": {"train_blobs": [{"x": 184, "y": 740, "n": 200}] if opened else []},
+            "unit": {"train": True} if opened else {},
+            "ready": {"train": True} if opened else {},
+            "hud": {},
+            "turn_diff": None,
+        }
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands, "remember", return_value=None), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.recruit(city_id="c7_16")
+    assert r["ok"] is True, r
+    assert (184, 740) in clicks
+    wheres = [t.get("where") for t in (r.get("tried") or [])]
+    assert "plate" in wheres
+    assert any(w in {"tile", "city_foot", "building"} for w in wheres), r
+    reset_obs()
+
+
 def test_unit_id_stays_resolvable_after_observe_drops_it():
     """Live: after /attack timeout, next call was 'no entity u2'."""
     from unittest.mock import patch
@@ -2528,6 +2585,41 @@ def test_observe_east_port_unit_without_hp_bar():
     ]
     assert near, mapped["units"]
     assert any(u.get("owner") == "own" or u.get("tribe") == "bardur" for u in near), near
+
+
+def test_sticky_bardur_stays_own_if_frame_flips_vengir():
+    """Live T46: after /recruit click, c7_16 flipped cities_own → cities_enemy."""
+    prev = [{
+        "id": "c7_16",
+        "city_id": "c7_16",
+        "tile": [7, 16],
+        "tile_xy": [400, 300],
+        "x": 400,
+        "y": 300,
+        "plate_y": 330,
+        "tribe": "bardur",
+        "owner": "own",
+        "name": None,
+        "evidence": ["frost_plate", "gold_star"],
+        "confidence": 0.72,
+        "n": 380,
+    }]
+    nxt = [{
+        "id": "c7_16",
+        "city_id": "c7_16",
+        "tile": [7, 16],
+        "x": 402,
+        "y": 302,
+        "plate_y": 332,
+        "tribe": "vengir",
+        "owner": "enemy",
+        "evidence": ["frost_plate", "magenta_roof"],
+        "confidence": 0.70,
+        "n": 360,
+    }]
+    out = stabilize(nxt, prev, keep_missing=True)
+    hit = [c for c in out if c.get("id") == "c7_16"]
+    assert hit and hit[0]["tribe"] == "bardur" and hit[0]["owner"] == "own", hit
 
 
 def test_sticky_disrof_stays_enemy_if_frame_flips_bardur():
@@ -3853,6 +3945,7 @@ if __name__ == "__main__":
     test_crowded_bardur_own_and_vengir_enemy()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
+    test_recruit_clicks_city_foot_when_plate_misses_train()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
     test_move_to_never_returns_ok_null()
@@ -3869,6 +3962,7 @@ if __name__ == "__main__":
     test_observe_keeps_disrof_with_unit_on_east_port()
     test_observe_keeps_disrof_when_garrison_covers_roof()
     test_observe_east_port_unit_without_hp_bar()
+    test_sticky_bardur_stays_own_if_frame_flips_vengir()
     test_sticky_disrof_stays_enemy_if_frame_flips_bardur()
     test_stabilize_units_matches_by_tile()
     test_move_to_from_mountain_unit_stands_on_city()

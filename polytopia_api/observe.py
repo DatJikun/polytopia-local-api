@@ -197,6 +197,19 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
     elif src_tribe == "vengir" and dst_tribe == "oumaji":
         d["tribe"] = "vengir"
         d["owner"] = "own" if str(src.get("owner") or "") == "own" else "enemy"
+    elif str(src.get("owner") or "") == "own":
+        # Live T46: after /recruit click, c7_16 flipped cities_own → cities_enemy.
+        # A magenta speck / selection highlight must not steal Bardur mid-turn.
+        d["owner"] = "own"
+        if src_tribe:
+            d["tribe"] = src_tribe
+        ev = list(src.get("evidence") or [])
+        if ev:
+            cur = list(d.get("evidence") or [])
+            for item in ev:
+                if item not in cur:
+                    cur.append(item)
+            d["evidence"] = cur
     cid = str(d.get("id") or src.get("id") or "")
     if cid:
         d["id"] = cid

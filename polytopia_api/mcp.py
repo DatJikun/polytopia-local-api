@@ -98,7 +98,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_recruit",
-        "description": "Select city_id (nameplate) then click a detected TRAIN blob. Marks observe under 8s (no HUD OCR hang). Radial unit portraits still need a map click.",
+        "description": "Select city_id (nameplate then city tile) and click a UNIT_CROP TRAIN blob. Marks observe under 8s (no HUD OCR hang). Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {
