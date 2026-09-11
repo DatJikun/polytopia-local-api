@@ -101,10 +101,11 @@ def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tup
         return "vengir", rgb
     if oumaji_n and vengir_n:
         return "vengir", rgb
+    # Gold window lamps match Oumaji sand. On Bardur-grey stone they are Vengir.
+    if oumaji_n and bardur_n:
+        return "vengir", rgb
     if oumaji_n and mean_lum < 135 and oumaji_n < 0.50 * total:
         return "vengir", rgb
-    if oumaji_n and bardur_n and oumaji_n <= bardur_n:
-        return "vengir" if mean_lum < 140 else "bardur", rgb
     tribe = max(votes, key=votes.get)
     return tribe, rgb
 
@@ -267,6 +268,50 @@ def _city_label_marks(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bo
     return 6 <= n <= 420
 
 
+def _plate_is_frost(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool:
+    """Moonrise frost banner (~180 grey), not a hot-white sand/UI streak."""
+    h, w = arr.shape[:2]
+    x0 = max(0, cx - max(8, bw // 2))
+    x1 = min(w, cx + max(8, bw // 2) + 1)
+    y0 = max(0, cy - max(4, bh // 2))
+    y1 = min(h, cy + max(4, bh // 2) + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 20:
+        return False
+    r = crop[:, :, 0].astype(np.int32)
+    g = crop[:, :, 1].astype(np.int32)
+    b = crop[:, :, 2].astype(np.int32)
+    chroma = np.maximum(r, np.maximum(g, b)) - np.minimum(r, np.minimum(g, b))
+    lum = (r + g + b) / 3.0
+    frost = (lum >= 148) & (lum <= 215) & (chroma <= 36)
+    return float(frost.mean()) >= 0.35
+
+
+def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
+    """Magenta/wine roof can sit well above the frost plate (outside radius=14)."""
+    h, w = arr.shape[:2]
+    x0 = max(0, cx - max(20, bw // 2 + 10))
+    x1 = min(w, cx + max(20, bw // 2 + 10) + 1)
+    y0 = max(0, cy - up * 2 - 16)
+    y1 = max(y0 + 1, min(h, cy - 4))
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 20:
+        return 0
+    r = crop[:, :, 0].astype(np.int32)
+    g = crop[:, :, 1].astype(np.int32)
+    b = crop[:, :, 2].astype(np.int32)
+    purple = (r + b) / 2 - g
+    mag = (
+        (g <= 100)
+        & (np.maximum(r, b) >= 48)
+        & (np.maximum(np.maximum(r, g), b) <= 185)
+        & (np.minimum(r, b) >= 40)
+        & (purple >= 12)
+        & (np.abs(r - b) <= 55)
+    )
+    return int(mag.sum())
+
+
 def _plate_contrast(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool:
     """Letters (or the star/icon) punch holes in the frost; snow does not.
 
@@ -325,17 +370,26 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14)
         if is_water_rgb(*rgb):
             continue
-        name = plate_name(arr, cx, cy, bw, bh)
+        roof_n = _vengir_roof_pixels(arr, cx, cy, bw, up)
+        frost_plate = _plate_is_frost(arr, cx, cy, bw, bh)
+        if roof_n >= 8:
+            tribe = "vengir"
+        # Gold lamps on a frost nameplate are Disrof, not a desert city.
+        if tribe == "oumaji" and frost_plate:
+            tribe = "vengir"
+        # Skip plate OCR for known tribes — names are optional and tesseract
+        # on every frost cluster made /attack hang past 12s.
+        name = ""
+        if tribe == "unknown":
+            name = plate_name(arr, cx, cy, bw, bh)
         if tribe == "unknown" and not name:
             continue
         own = tribe == _own_tribe()
         if tribe == "unknown":
             own = False
-        if not own and not name and tribe == "oumaji":
-            # Sand / yellow UI next to a frost streak is not an Oumaji city.
-            # Vengir/Imperius keep the hit even when OCR misses Disrof.
-            if n < max(70, int(round(90 * s))) or bw < max(32, int(40 * s)):
-                continue
+        if not own and tribe == "oumaji" and not frost_plate:
+            # Bright sand / yellow UI, not a Moonrise frost city.
+            continue
         conf = 0.72 if own else 0.62
         if tribe == "imperius":
             conf = 0.55
@@ -356,17 +410,6 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         if tile_xy is None:
             tile_xy = (cx, building_y)
         gx, gy = combat.tile_grid(tile_xy[0], tile_xy[1], frame)
-        lum = (int(rgb[0]) + int(rgb[1]) + int(rgb[2])) / 3.0
-        if not own:
-            # Enemy: Vengir, or dark stone + nameplate. Bright oumaji ghosts go.
-            gold_on_dark = lum < 140 and _city_label_marks(arr, cx, cy, bw, bh)
-            dark_stone = lum < 135
-            if tribe == "vengir":
-                pass
-            elif gold_on_dark or (dark_stone and (bool(name) or marks)):
-                pass
-            else:
-                continue
         cities.append(
             {
                 "id": combat.city_id_for_tile(gx, gy),
@@ -398,7 +441,9 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
 
 def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
     if a.get("tile") is not None and a.get("tile") == b.get("tile"):
-        return 10**6
+        if a.get("owner") == b.get("owner"):
+            return 10**6
+        return dist
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir", "bardur"}:
         return max(dist, 96)

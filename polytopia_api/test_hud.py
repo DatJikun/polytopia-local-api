@@ -461,6 +461,77 @@ def test_gold_windows_are_not_oumaji():
     assert tribe == "vengir", tribe
 
 
+def test_disrof_gold_windows_without_magenta_sample():
+    """Live Disrof: gold lamps fill the radius=14 patch; roof sits higher.
+
+    The 397c23d lum filter treated that sample as bright Oumaji and dropped
+    the city, so cities_enemy went empty while Disrof was on screen.
+    """
+    from polytopia_api.detect import as_rgb
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    d.rectangle((200, 355, 270, 418), fill=(90, 85, 80))
+    d.rectangle((208, 360, 262, 410), fill=(224, 188, 63))
+    d.rectangle((186, 428, 308, 450), fill=(180, 180, 178))
+    d.ellipse((278, 432, 296, 448), fill=(224, 188, 63))
+    d.rectangle((200, 434, 206, 444), fill=(40, 40, 40))
+    arr = as_rgb(im)
+    cities = find_cities(arr)
+    frost = [c for c in cities if 170 <= int(c["x"]) <= 310]
+    assert frost, cities
+    assert all(c["tribe"] == "vengir" and c["owner"] == "enemy" for c in frost), frost
+    assert all(c.get("tile") for c in frost)
+
+
+def test_attack_timeout_skips_second_observe():
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+
+    city = {
+        "id": "c5_3",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "tile": [5, 3],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    state = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [{"id": "u2", "x": 140, "y": 80}],
+        "unit": {"no_actions": False, "unit": "warrior"},
+        "attack_marks": [{"x": 201, "y": 81, "n": 20}],
+    }
+    clock = {"t": 0.0}
+    observe_n = {"n": 0}
+
+    def fake_time():
+        return clock["t"]
+
+    def fake_select(**kwargs):
+        clock["t"] = 8.0
+        return {"ok": True, "unit": state["unit"]}
+
+    def fake_observe():
+        observe_n["n"] += 1
+        raise AssertionError("attack must not observe again after the 8s budget")
+
+    with patch.object(commands.time, "time", fake_time), patch.object(
+        commands, "remember", return_value=state
+    ), patch.object(commands, "observe", side_effect=fake_observe), patch.object(
+        commands, "select_unit", side_effect=lambda **k: fake_select()
+    ), patch.object(commands, "_click"), patch.object(commands, "_sleep"):
+        r = commands.attack(from_id="u2", city_id="c5_3")
+    assert r["ok"] is False and r["reason"] == "timeout"
+    assert r["elapsed_s"] < 12
+    assert observe_n["n"] == 0
+
+
 def test_snapshot_alerts():
     prev = {
         "hud": {"turn": 18, "stars": 5, "income": 7},
@@ -907,6 +978,8 @@ if __name__ == "__main__":
     test_hud_star_split()
     test_stable_entity_ids()
     test_gold_windows_are_not_oumaji()
+    test_disrof_gold_windows_without_magenta_sample()
+    test_attack_timeout_skips_second_observe()
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
     test_observe_hud_untrusts_ocr_behind_floor()

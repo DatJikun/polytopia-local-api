@@ -11,6 +11,8 @@ from . import driver
 from . import snapshot
 from .observe import observe, remember, lookup
 
+ATTACK_BUDGET_S = 7.5
+
 
 def _sleep(seconds: float = 0.4) -> None:
     time.sleep(min(seconds, 1.2))
@@ -338,16 +340,49 @@ def attack(
 ) -> dict[str, Any]:
     """Red mark nearest garrison unit xy. HP from that bar, not the city plate."""
     t0 = time.time()
-    dest = _resolve(to_id or city_id, space)
+
+    def _elapsed() -> float:
+        return round(time.time() - t0, 3)
+
+    ident = to_id or city_id
+    prev = remember()
+    dest = lookup(prev, ident) if prev and ident else None
+    if dest is None and ident:
+        dest = _resolve(ident, space)
     if dest:
         space = "screen"
+    if _elapsed() >= ATTACK_BUDGET_S:
+        return {
+            "ok": False,
+            "name": "attack",
+            "reason": "timeout",
+            "hint": "budget <8s — not looping observe",
+            "from_id": from_id,
+            "to_id": ident,
+            "dest": dest,
+            "elapsed_s": _elapsed(),
+        }
     selected = None
     if from_id or from_x is not None:
         selected = select_unit(x=from_x, y=from_y, id=from_id, space=space)
         if not selected.get("ok"):
-            return {**selected, "name": "attack", "elapsed_s": round(time.time() - t0, 3)}
-    before = remember() or observe()
-    elapsed = round(time.time() - t0, 3)
+            return {**selected, "name": "attack", "elapsed_s": _elapsed()}
+    if _elapsed() >= ATTACK_BUDGET_S:
+        return {
+            "ok": False,
+            "name": "attack",
+            "reason": "timeout",
+            "hint": "select/observe blew the 8s budget — not a second observe",
+            "from_id": from_id,
+            "to_id": ident,
+            "dest": dest,
+            "selected": selected,
+            "elapsed_s": _elapsed(),
+        }
+    before = remember() or (selected or {}).get("state") or prev
+    if before is None:
+        before = observe()
+    elapsed = _elapsed()
     panel = before.get("unit") or {}
     if panel.get("no_actions"):
         return {
@@ -432,7 +467,25 @@ def attack(
             "unit": panel,
         }
     clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
-    _sleep(0.35)
+    if _elapsed() >= ATTACK_BUDGET_S:
+        return {
+            "ok": True,
+            "name": "attack",
+            "from_id": from_id,
+            "to_id": ident,
+            "city_id": dest.get("id") if dest else city_id,
+            "x": clicked["x"],
+            "y": clicked["y"],
+            "clicked_mark": mark,
+            "hp_before": hp_before,
+            "hp_dropped": False,
+            "reason": "timeout",
+            "hint": "clicked red mark but skipped post-observe to stay under 8s",
+            "elapsed_s": _elapsed(),
+            "garrison": garrison,
+            "aim": [x, y],
+        }
+    _sleep(0.25)
     after = observe()
     hp_after = _hp_snapshot(after, to_id or city_id, x, y)
     hp_dropped = False
