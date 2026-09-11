@@ -220,6 +220,15 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
                     if item not in cur:
                         cur.append(item)
                 d["evidence"] = cur
+            # Tile-hash jitter can land a weaker frost fragment on the same
+            # city_id. Keep the longhouse footprint so sticky Orkork still
+            # passes _is_real_own_hit after lamps occlude.
+            src_own = {**src, "owner": "own"}
+            dst_own = {**d, "owner": "own"}
+            if entities._is_real_own_hit(src_own) and not entities._is_real_own_hit(dst_own):
+                for k in ("warm_n", "wood_w", "wood_h", "wood_dens", "gold_n", "n", "w", "evidence"):
+                    if src.get(k) is not None:
+                        d[k] = src[k]
     cid = str(d.get("id") or src.get("id") or "")
     if cid:
         d["id"] = cid
@@ -294,6 +303,16 @@ def stabilize(
             if dist < best_d * best_d:
                 best_d = int(dist ** 0.5)
                 best = p
+        if best and best.get("id"):
+            # Live T46: c15_24 @~35px stole Orkork c16_24, overwrote wood
+            # stats, then _drop_own_phantoms deleted the id (cities_own 2→1).
+            if (
+                str(best.get("owner") or "") == "own"
+                and entities._is_real_own_hit(best)
+                and str(d.get("owner") or "") == "own"
+                and not entities._is_real_own_hit(d)
+            ):
+                best = None
         if best and best.get("id"):
             # Same hex already matched above. A neighbor at <56px with a
             # different owner is a different city — do not steal Bardur ids.
