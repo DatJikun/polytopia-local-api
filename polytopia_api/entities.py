@@ -292,9 +292,12 @@ def _plate_is_frost(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool
 
 
 def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[int, int, int, int]:
-    """Narrow column above the frost plate — this city's building, not a neighbor."""
+    """Column above the frost plate — this city's building, not a neighbor.
+
+    Plate clustering can sit a few px left of the roof; bw/3 missed Disrof magenta.
+    """
     h, w = arr.shape[:2]
-    half = max(16, bw // 3)
+    half = max(22, bw // 2)
     x0 = max(0, cx - half)
     x1 = min(w, cx + half + 1)
     y0 = max(0, cy - up * 2 - 16)
@@ -336,11 +339,62 @@ def _gold_window_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
     return int(gold.sum())
 
 
-def _disrof_signal(roof_n: int, gold_n: int, frost_plate: bool = False) -> bool:
-    """Live Disrof: magenta roof, or gold lamps on a frost-plate city (not sand)."""
+def _plate_gold_split(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> tuple[int, int]:
+    """Gold on the frost nameplate: (window lamps, level-star).
+
+    Moonrise: [icon] name [gold star on the right]. Disrof lamps are two (or
+    more) gold runs on the plate. A single compact blob is the level star —
+    even when a split plate fragment puts that star in the left of its crop.
+    """
+    h, w = arr.shape[:2]
+    pad = max(12, bw // 2 + 8)
+    x0 = max(0, cx - pad)
+    x1 = min(w, cx + pad + 1)
+    y0 = max(0, cy - max(4, bh // 2))
+    y1 = min(h, cy + max(4, bh // 2) + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 20:
+        return 0, 0
+    r = crop[:, :, 0].astype(np.int32)
+    g = crop[:, :, 1].astype(np.int32)
+    b = crop[:, :, 2].astype(np.int32)
+    gold = (r >= 180) & (g >= 140) & (g <= 220) & (b <= 110) & (r >= b + 60)
+    gold_n = int(gold.sum())
+    if gold_n < 12:
+        return 0, gold_n
+    cols = np.any(gold, axis=0)
+    runs: list[tuple[int, int]] = []
+    start = None
+    for i, v in enumerate(cols.tolist()):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            runs.append((start, i))
+            start = None
+    if start is not None:
+        runs.append((start, int(cols.shape[0])))
+    # Two+ gold runs on the plate are Disrof lamps. A single blob is the
+    # Moonrise level star unless it is much wider than a star.
+    star_w = max(18, int(round(22 * w / coords.BASE_W)))
+    if len(runs) >= 2:
+        return gold_n, 0
+    if len(runs) == 1 and (runs[0][1] - runs[0][0]) >= star_w + 10:
+        return gold_n, 0
+    return 0, gold_n
+
+
+def _disrof_signal(
+    roof_n: int,
+    gold_n: int,
+    frost_plate: bool = False,
+    plate_window_n: int = 0,
+) -> bool:
+    """Live Disrof: magenta roof, building lamps, or gold windows on the frost plate."""
     if roof_n >= 8:
         return True
-    return bool(frost_plate) and gold_n >= 16
+    if not frost_plate:
+        return False
+    return gold_n >= 16 or plate_window_n >= 12
 
 
 
@@ -408,7 +462,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         roof_n = _vengir_roof_pixels(arr, cx, cy, bw, up)
         gold_n = _gold_window_pixels(arr, cx, cy, bw, up)
         frost_plate = _plate_is_frost(arr, cx, cy, bw, bh)
-        strong_vengir = _disrof_signal(roof_n, gold_n, frost_plate)
+        plate_win_n, _plate_star_n = _plate_gold_split(arr, cx, cy, bw, bh)
+        strong_vengir = _disrof_signal(roof_n, gold_n, frost_plate, plate_win_n)
         if strong_vengir:
             tribe = "vengir"
         elif tribe == "vengir":
@@ -453,9 +508,9 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             evidence.append("frost_plate")
         if roof_n >= 8:
             evidence.append("magenta_roof")
-        if gold_n >= 8:
+        if gold_n >= 8 or plate_win_n >= 12:
             evidence.append("gold_lamps")
-        if marks:
+        if marks and "gold_lamps" not in evidence:
             evidence.append("gold_star")
         building_y = max(0, cy - up // 2)
         frame = (w, h)
@@ -466,9 +521,11 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         if tile_xy is None:
             tile_xy = (cx, building_y)
         gx, gy = combat.tile_grid(tile_xy[0], tile_xy[1], frame)
+        cid = combat.city_id_for_tile(gx, gy)
         cities.append(
             {
-                "id": combat.city_id_for_tile(gx, gy),
+                "id": cid,
+                "city_id": cid,
                 "kind": "city",
                 "x": cx,
                 "y": building_y,
@@ -511,6 +568,9 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         return 10**6
     oa, ob = a.get("owner"), b.get("owner")
     if oa and ob and oa != ob:
+        # Absorb the grey-stone half of Disrof; do not eat distant Bardur.
+        if _is_disrof_hit(a) or _is_disrof_hit(b):
+            return max(dist, 64)
         return 0
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
@@ -526,28 +586,39 @@ def _plates_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
         by = int(b.get("plate_y") or b["y"])
     except (KeyError, TypeError, ValueError):
         return False
-    if abs(ay - by) > 12:
+    if abs(ay - by) > 14:
         return False
-    return abs(ax - bx) <= (aw + bw) / 2 + 8
+    # Gold star punches a hole in the frost, so one nameplate can split into
+    # two clusters ~100px apart. Merge those; distinct cities are farther.
+    gap = abs(ax - bx) - (aw + bw) / 2
+    return gap <= 64
+
+
+def _is_disrof_hit(c: dict[str, Any]) -> bool:
+    ev = c.get("evidence") or []
+    return c.get("tribe") == "vengir" and ("magenta_roof" in ev or "gold_lamps" in ev)
 
 
 def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     # Same nameplate: gold/magenta Disrof wins over the grey-stone half.
     # Distinct hexes with different owners never reach here unless plates overlap.
-    def _disrof(c: dict[str, Any]) -> bool:
+    def _score(c: dict[str, Any]) -> tuple:
         ev = c.get("evidence") or []
-        return c.get("tribe") == "vengir" and ("magenta_roof" in ev or "gold_lamps" in ev)
+        return (
+            1 if _is_disrof_hit(c) else 0,
+            1 if "magenta_roof" in ev else 0,
+            int(c.get("roof_n") or 0),
+            int(c.get("gold_n") or 0),
+            1 if "gold_lamps" in ev else 0,
+            int(c.get("n") or 0),
+        )
 
-    if _disrof(a) and not _disrof(b):
-        win = dict(a)
-        if b.get("name") and not win.get("name"):
-            win["name"] = b["name"]
-        return win
-    if _disrof(b) and not _disrof(a):
-        win = dict(b)
-        if a.get("name") and not win.get("name"):
-            win["name"] = a["name"]
-        return win
+    if _score(a) != _score(b) and (_is_disrof_hit(a) or _is_disrof_hit(b)):
+        win, lose = (a, b) if _score(a) > _score(b) else (b, a)
+        out = dict(win)
+        if lose.get("name") and not out.get("name"):
+            out["name"] = lose["name"]
+        return out
     own = _own_tribe()
     if a.get("owner") == "own" and b.get("owner") != "own" and a.get("tribe") == own:
         return a

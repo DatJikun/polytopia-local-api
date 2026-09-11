@@ -628,6 +628,7 @@ def test_m20_bardur_own_and_one_disrof():
     enemy = mapped["cities_enemy"]
     assert len(own) >= 3, own
     assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    assert all(c.get("city_id") == c.get("id") and str(c["id"]).startswith("c") for c in mapped["cities"]), mapped["cities"]
     xs_own = sorted(int(c["x"]) for c in own)
     assert any(abs(x - 640) < 40 for x in xs_own), own
     assert any(abs(x - 910) < 40 for x in xs_own), own
@@ -640,6 +641,88 @@ def test_m20_bardur_own_and_one_disrof():
     assert "arch" not in names, mapped["cities"]
     tribe, _ = sample_patch_tribe(arr, 247, 380, radius=14)
     assert tribe == "vengir", tribe
+
+
+def _draw_disrof_plate_windows(d, cx: int, plate_y: int) -> None:
+    """Disrof gold lamps on the frost plate itself (0bfb6f7 contract), no magenta roof."""
+    d.rectangle((cx - 35, plate_y - 75, cx + 35, plate_y - 18), fill=(90, 85, 80))
+    d.rectangle((cx - 62, plate_y - 10, cx + 62, plate_y + 12), fill=(180, 180, 178))
+    d.rectangle((cx - 48, plate_y - 2, cx - 42, plate_y + 8), fill=(40, 40, 40))
+    # Windows in the left/center of the plate — not the right-side level star.
+    d.rectangle((cx - 28, plate_y - 6, cx - 14, plate_y + 6), fill=(224, 188, 63))
+    d.rectangle((cx - 4, plate_y - 6, cx + 10, plate_y + 6), fill=(224, 188, 63))
+
+
+def test_frost_plate_gold_windows_stay_enemy_not_own():
+    """Frost-plate gold windows stay Vengir enemy; must not invent cities_own.
+
+    Live 0bfb6f7 contract: gold on the nameplate is Disrof lamps, not a Bardur
+    city. A right-side gold star still keeps Ufla/Orkork/Grugru as own.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 640, 520)
+    _draw_bardur_city(d, 910, 439)
+    _draw_bardur_city(d, 1180, 640)
+    _draw_disrof_plate_windows(d, 247, 439)
+    # Left-shifted frost cluster (gold punches the plate); still enemy, not own.
+    d.rectangle((200, 155, 270, 218), fill=(90, 85, 80))
+    d.rectangle((186, 228, 308, 250), fill=(180, 180, 178))
+    d.rectangle((198, 232, 212, 246), fill=(224, 188, 63))
+    d.rectangle((228, 232, 242, 246), fill=(224, 188, 63))
+    d.rectangle((200, 234, 206, 244), fill=(40, 40, 40))
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 3, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    assert all(c.get("city_id") == c.get("id") for c in mapped["cities"]), mapped["cities"]
+    xs_own = [int(c["x"]) for c in own]
+    assert all(abs(x - 247) > 50 for x in xs_own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert 1 <= len(vengir) <= 2, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+    assert any(abs(int(c["x"]) - 247) < 50 for c in vengir), vengir
+    assert any("gold_lamps" in (c.get("evidence") or []) for c in vengir), vengir
+    assert all(float(c.get("confidence") or 0) >= 0.78 for c in vengir), vengir
+
+
+def test_1280_bardur_own_and_plate_window_disrof():
+    """Live 1280×800: Bardur cities_own stay non-empty; plate-gold Disrof is enemy."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    s = 1280 / 1920
+
+    def sc(n: float) -> int:
+        return int(round(n * s))
+
+    for cx, cy in ((640, 520), (910, 439), (1180, 640)):
+        d.rectangle((sc(cx - 30), sc(cy - 78), sc(cx + 30), sc(cy - 18)), fill=(90, 85, 80))
+        d.rectangle((sc(cx - 52), sc(cy - 10), sc(cx + 52), sc(cy + 12)), fill=(180, 180, 178))
+        d.rectangle((sc(cx - 40), sc(cy - 4), sc(cx - 34), sc(cy + 6)), fill=(40, 40, 40))
+        d.ellipse((sc(cx + 34), sc(cy - 6), sc(cx + 50), sc(cy + 8)), fill=(224, 188, 63))
+    cx, py = sc(247), sc(439)
+    d.rectangle((cx - sc(35), py - sc(75), cx + sc(35), py - sc(18)), fill=(90, 85, 80))
+    d.rectangle((cx - sc(62), py - sc(10), cx + sc(62), py + sc(12)), fill=(180, 180, 178))
+    d.rectangle((cx - sc(48), py - sc(2), cx - sc(42), py + sc(8)), fill=(40, 40, 40))
+    d.rectangle((cx - sc(28), py - sc(6), cx - sc(14), py + sc(6)), fill=(224, 188, 63))
+    d.rectangle((cx - sc(4), py - sc(6), cx + sc(10), py + sc(6)), fill=(224, 188, 63))
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert own, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert vengir, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+    assert any("gold_lamps" in (c.get("evidence") or []) for c in vengir), vengir
+    assert all(c.get("city_id") == c.get("id") for c in mapped["cities"])
 
 
 def test_attack_timeout_skips_second_observe():
@@ -1483,6 +1566,8 @@ if __name__ == "__main__":
     test_bardur_own_not_eaten_by_vengir_frost()
     test_bardur_gold_star_stays_own()
     test_m20_bardur_own_and_one_disrof()
+    test_frost_plate_gold_windows_stay_enemy_not_own()
+    test_1280_bardur_own_and_plate_window_disrof()
     test_attack_timeout_skips_second_observe()
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
