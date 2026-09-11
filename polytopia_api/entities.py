@@ -645,13 +645,19 @@ def _warm_bardur_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
     return _bardur_wood_stats(arr, cx, cy, bw, up)[0]
 
 
+# Live T46 after #44: moonrise wine-grey is lighter than g<=72 / purple>=5.
+# (82,74,80) / (88,80,86) vote Bardur and were 0 wine_n, so c14_23 vanished.
+WINE_SALVAGE_MIN = 4
+
+
 def _wine_wall_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
     """Loose wine/purple in the building column (dark Vengir that votes Bardur).
 
     Live c14_23 walls plurality-vote Bardur so sampled_tribe *and* col_tribe
     are bardur; classify_tribe(vengir) (purple>=10) misses wine-grey stone.
-    Real longhouses (90,85,80) have purple≈0. Thresholds stay below magenta
-    roofs so wine-shadow on Bufla does not need this count.
+    #44's g<=72 missed lighter moonrise veins (g≈74–86, purple≈4–8). Real
+    longhouses (90,85,80) have purple≈0. Thresholds stay below magenta roofs
+    so wine-shadow on Bufla does not need this count.
     """
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
@@ -662,11 +668,11 @@ def _wine_wall_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> in
     b = crop[:, :, 2].astype(np.int32)
     purple = (r + b) / 2.0 - g
     wine = (
-        (g <= 72)
-        & (purple >= 5)
-        & (np.minimum(r, b) >= 20)
-        & (np.maximum(np.maximum(r, g), b) <= 160)
-        & (np.abs(r - b) <= 80)
+        (g <= 94)
+        & (purple >= 3.0)
+        & (np.minimum(r, b) >= 16)
+        & (np.maximum(np.maximum(r, g), b) <= 175)
+        & (np.abs(r.astype(np.int32) - b) <= 90)
     )
     return int(wine.sum())
 
@@ -921,6 +927,13 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         # Skip plate OCR — names are optional; tesseract on frost fragments
         # invented ghosts like "Arch" and made /attack hang past 12s.
         name = ""
+        wine_n = _wine_wall_pixels(arr, cx, cy, bw, up) if frost_plate else 0
+        dark_vengir = False
+        # Live T46 after #44: walls too dark/grey to vote Bardur or Vengir
+        # still have wine veins + frost+star. Do not drop c14_23 as unknown.
+        if tribe == "unknown" and frost_plate and marks and wine_n >= WINE_SALVAGE_MIN:
+            tribe = "vengir"
+            dark_vengir = True
         if tribe == "unknown":
             continue
         own = tribe == _own_tribe()
@@ -929,13 +942,11 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         wood_h = 0
         wood_dens = 0.0
         grey_stone = False
-        dark_vengir = False
         if own:
             # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
             # but a lettered full plate still counts when the star clustered onto a
             # neighbor. Fruit-gold / cool mountain / tiny frost splits are ghosts.
             warm_n, wood_w, wood_h, wood_dens = _bardur_wood_stats(arr, cx, cy, bw, up)
-            wine_n = _wine_wall_pixels(arr, cx, cy, bw, up)
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
             # #32's warm_n>=500 floor ate live Bufla/Orkork (cities_own 1→0).
             # Synthetic longhouses are ~1600+; live moonrise wood is far sparser.
@@ -981,6 +992,16 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 # y≈45 / gy=1 while Orkork/Bufla/Grugri were the only cities on screen).
                 if _plate_in_top_chrome(cy, h):
                     continue
+        elif (
+            tribe == "vengir"
+            and frost_plate
+            and marks
+            and wine_n >= WINE_SALVAGE_MIN
+            and gold_n < 24
+        ):
+            # wood=False frost+star path: unnamed frost FPs are capped at 2.
+            # Tag wine-grey c14_23 as dark_vengir so it is a real 5th enemy.
+            dark_vengir = True
         if not own and tribe == "oumaji":
             # Bright sand / yellow UI, not a Moonrise frost city.
             continue
@@ -1050,6 +1071,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "wood_w": wood_w,
                 "wood_h": wood_h,
                 "wood_dens": wood_dens,
+                "wine_n": wine_n,
             }
         )
     cities.sort(
@@ -1356,9 +1378,10 @@ def _own_miss_is_dark_vengir(
 ) -> bool:
     """Wine-wall Vengir that a Bardur wood vote would drop from both lists.
 
-    Live after #43: c14_23 (frost+star, gold_n<24) still vanished because
-    sampled_tribe *and* col_tribe were bardur (wine-grey stone). Wine pixels
-    in the column salvage it. Real Orkork is a sparse longhouse and stays own.
+    Live after #43/#44: c14_23 (frost+star, gold_n<24) vanished because
+    sampled_tribe *and* col_tribe were bardur (wine-grey stone). #44's
+    wine_n>=8 + g<=72 still missed live veins (g≈74–86). Count lighter
+    wine-grey. Real Orkork is a sparse longhouse and stays own.
     """
     if not frost_plate or not marks:
         return False
@@ -1372,8 +1395,9 @@ def _own_miss_is_dark_vengir(
         return False
     if sampled_tribe == "vengir" or col_tribe == "vengir":
         return True
-    # Live T46: plurality Bardur, but wine-grey veins are still Vengir walls.
-    return int(wine_n or 0) >= 8
+    # Live T46 after #44: plurality Bardur, lighter wine-grey (g>72) still
+    # Vengir walls. 8px was too strict — live c14_23 was 0 hits.
+    return int(wine_n or 0) >= WINE_SALVAGE_MIN
 
 
 def _own_plate_is_split_fragment(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1408,7 +1432,11 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     on the plate but almost no building lamps, and are not dense synthetic
     longhouses (dens≳0.34, gold_n=0) or sparse live longhouses (Orkork
     c16_24: ww≳36 wh≳60 warm≳140 dens≳0.06, plate w≳70 even when gold_n<24).
-    Dict fixtures omit wood_* — treat those as already-vetted cities.
+    After /recruit or /move-to, leaked gold (gold_n≥24) on the same fragment
+    (ww≈30 dens≈0.08) used to pass this gate and sticky-grow own 2→4. A dense
+    unit-sized blob (ww≈31 dens≈0.46 gold_n≥24) is not a synthetic longhouse.
+    Gold does not skip the longhouse footprint. Dict fixtures omit wood_* —
+    treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
         return True
@@ -1429,10 +1457,15 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     if c.get("gold_n") is not None:
         gold = int(c.get("gold_n") or 0)
         ww = int(c.get("wood_w") or 0)
-        # Sparse live longhouse keeps via roof lamps *or* the wood footprint
-        # (live T46 Orkork/c16_24 gold_n can dip below 24 when lamps hide).
-        # Compact / synthetic longhouses keep via dens≳0.34 even when gold_n=0.
-        if gold < 24 and dens < 0.34 and not _sparse_own_longhouse(c):
+        # Sparse live longhouse keeps via the wood footprint even when gold_n
+        # is 0, occluded, *or* inflated by recruit/move gold leak.
+        # Compact / synthetic longhouses keep via dens≳0.34 even when gold_n=0
+        # (scaled 1280 `_draw_bardur_city` n≈700 w≈55). A gold-leaked unit
+        # blob (ww≈31 dens≈0.46 gold_n≥24) is not that.
+        if dens < 0.34:
+            if not _sparse_own_longhouse(c):
+                return False
+        elif gold >= 24 and ww < 36:
             return False
         # Narrow unit column (even a dense leather blob) is not a longhouse.
         if ww < 28 and gold < 24:
@@ -1450,7 +1483,8 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
     neighbors stay two. Short/sparse, tall-empty, tall-dense-low-gold
     (c12_16 dens≈0.28 gold_n≈5 / c17_14), *and* frost/wood plates with a
     gold star but no building lamps *and* no longhouse wood (c15_15 /
-    c15_12 / c15_24) still drop from own. Orkork/c16_24 stays.
+    c15_12 / c15_24), including after /recruit+/move-to gold leak
+    (gold_n≥24 on ww≈30), still drop from own. Orkork/c16_24 stays.
     """
     if c.get("owner") != "own":
         return False
@@ -1535,7 +1569,17 @@ def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     ev.append("grey_stone")
                 d["evidence"] = ev
                 out.append(d)
-            elif "dark_vengir" in (c.get("evidence") or []):
+            elif "dark_vengir" in (c.get("evidence") or []) or _own_miss_is_dark_vengir(
+                c,
+                sampled_tribe=str(c.get("tribe") or "bardur"),
+                col_tribe="bardur",
+                frost_plate="frost_plate" in (c.get("evidence") or []),
+                marks=(
+                    "gold_star" in (c.get("evidence") or [])
+                    or "gold_lamps" in (c.get("evidence") or [])
+                ),
+                wine_n=int(c.get("wine_n") or 0),
+            ):
                 d = dict(c)
                 d["owner"] = "enemy"
                 d["tribe"] = "vengir"
