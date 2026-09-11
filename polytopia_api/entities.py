@@ -898,6 +898,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         wood_w = 0
         wood_h = 0
         wood_dens = 0.0
+        grey_stone = False
         if own:
             # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
             # but a lettered full plate still counts when the star clustered onto a
@@ -911,19 +912,28 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "wood_w": wood_w,
                 "wood_h": wood_h,
                 "wood_dens": wood_dens,
+                "gold_n": gold_n,
             }
-            if (
+            if _own_wood_is_grey_stone_mass(rec_shape):
+                # Live c12_16: Vengir grey stone matches Bardur wood (warm≈936
+                # dens≈0.28 gold_n≈5) and stole cities_own while cities_enemy
+                # under-counted 5→4. Flip to enemy — do not drop the city.
+                tribe = "vengir"
+                own = False
+                grey_stone = True
+            elif (
                 not wood
                 or warm_n < 30
                 or not _own_wood_looks_like_building(rec_shape)
             ):
                 continue
-            if not marks and not lettered:
-                continue
-            # HUD stars + frost chrome classify as Bardur wood (live T46: c18_1
-            # y≈45 / gy=1 while Orkork/Bufla/Grugri were the only cities on screen).
-            if _plate_in_top_chrome(cy, h):
-                continue
+            else:
+                if not marks and not lettered:
+                    continue
+                # HUD stars + frost chrome classify as Bardur wood (live T46: c18_1
+                # y≈45 / gy=1 while Orkork/Bufla/Grugri were the only cities on screen).
+                if _plate_in_top_chrome(cy, h):
+                    continue
         if not own and tribe == "oumaji":
             # Bright sand / yellow UI, not a Moonrise frost city.
             continue
@@ -954,6 +964,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             evidence.append("gold_star")
         if own and warm_n >= 30:
             evidence.append("bardur_wood")
+        if grey_stone:
+            evidence.append("grey_stone")
         building_y = max(0, cy - up // 2)
         frame = (w, h)
         tile_xy = combat.city_tile_center(
@@ -1106,7 +1118,9 @@ def _plates_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 def _is_disrof_hit(c: dict[str, Any]) -> bool:
     ev = c.get("evidence") or []
-    return c.get("tribe") == "vengir" and ("magenta_roof" in ev or "gold_lamps" in ev)
+    return c.get("tribe") == "vengir" and (
+        "magenta_roof" in ev or "gold_lamps" in ev or "grey_stone" in ev
+    )
 
 
 def _city_sep2(a: dict[str, Any], b: dict[str, Any]) -> int:
@@ -1228,13 +1242,34 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
     return False
 
 
+def _own_wood_is_grey_stone_mass(c: dict[str, Any]) -> bool:
+    """Vengir grey stone matches Bardur wood; live c12_16 is not a longhouse.
+
+    Live Game Stats Bardur 2 / Vengir 5: c12_16 @(441,455) warm=936 wood_h=72
+    dens=0.277 gold_n=5 counted as own. Bufla/Orkork are sparse (dens≈0.08–0.09)
+    with roof lamps (gold_n 68–116). Synthetic solid longhouses are denser
+    still (dens≳0.45) with gold_n=0. Dict fixtures omit gold_n — not this.
+    Never a warm_n>=500 keep-floor.
+    """
+    if c.get("gold_n") is None or c.get("wood_dens") is None:
+        return False
+    dens = float(c.get("wood_dens") or 0)
+    gold_n = int(c.get("gold_n") or 0)
+    wh = int(c.get("wood_h") or 0)
+    # Mid-density tall mass, almost no building lamps. Live c12_16 dens=0.277.
+    # Scaled synthetic longhouses land dens≳0.40 (1920) / ≳0.45 (1280) with
+    # gold_n=0 — must stay own. Short unit frost (wh<34) stays a drop.
+    return gold_n < 16 and 0.16 <= dens < 0.34 and wh >= 50
+
+
 def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     """Drop unit-on-snow / mountain specks; keep live longhouses with sparse wood.
 
     #32 required dens≥0.45×tall (and warm_n≥500). Live Bufla/Orkork failed that
     (cities_own 1→0). #33 short∧sparse (wh<34 && dens<0.38) still lets through
     tall-empty frost (live T46 c17_14: wh=48 dens=0.021 warm=67). Keep Bufla/
-    Orkork (wh≈69–72 dens≈0.08–0.09 warm≈260). Never restore warm_n>=500.
+    Orkork (wh≈69–72 dens≈0.08–0.09 warm≈260, gold_n 68–116). Never restore
+    warm_n>=500. Tall-dense-low-gold (c12_16 dens≈0.28 gold_n≈5) is grey stone.
     Dict fixtures omit wood_* — treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
@@ -1251,6 +1286,8 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
         return False
     if wh < 26:
         return False
+    if _own_wood_is_grey_stone_mass(c):
+        return False
     return True
 
 
@@ -1259,8 +1296,8 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
 
     Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). #32's warm_n>=500
     floor left cities_own 1→0. Close-plate merge is capped at 48px so ~80px
-    neighbors stay two. Short/sparse *and* tall-empty wood (c12_16 / c17_14)
-    still drop.
+    neighbors stay two. Short/sparse, tall-empty, *and* tall-dense-low-gold
+    wood (c12_16 dens≈0.28 gold_n≈5 / c17_14) still drop from own.
     """
     if c.get("owner") != "own":
         return False
@@ -1321,10 +1358,23 @@ MAX_CITIES_OWN = 24
 
 
 def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop unnamed / HUD-fog / unit-sized / tall-empty own cities (c12_16, c17_14)."""
+    """Drop unnamed / HUD-fog / unit-sized / tall-empty own cities (c12_16, c17_14).
+
+    Tall-dense-low-gold c12_16 is Vengir grey stone — keep it as enemy so
+    cities_enemy matches Game Stats (4→5) instead of deleting the city.
+    """
     out: list[dict[str, Any]] = []
     for c in cities:
         if c.get("owner") == "own" and not _is_real_own_hit(c):
+            if _own_wood_is_grey_stone_mass(c):
+                d = dict(c)
+                d["owner"] = "enemy"
+                d["tribe"] = "vengir"
+                ev = [x for x in (d.get("evidence") or []) if x != "bardur_wood"]
+                if "grey_stone" not in ev:
+                    ev.append("grey_stone")
+                d["evidence"] = ev
+                out.append(d)
             continue
         out.append(c)
     return out
