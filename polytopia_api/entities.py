@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from . import combat
 from . import coords
 from .detect import _cluster, _cluster_params, _map_bounds, is_water_rgb, merge_clusters, sample
 
@@ -346,13 +347,35 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             conf = 0.70 if name else 0.50
         if conf < 0.55:
             continue
+        building_y = max(0, cy - up // 2)
+        frame = (w, h)
+        tile_xy = combat.city_tile_center(
+            {"x": cx, "y": building_y, "plate_y": cy},
+            frame,
+        )
+        if tile_xy is None:
+            tile_xy = (cx, building_y)
+        gx, gy = combat.tile_grid(tile_xy[0], tile_xy[1], frame)
+        lum = (int(rgb[0]) + int(rgb[1]) + int(rgb[2])) / 3.0
+        if not own:
+            # Enemy: Vengir, or dark stone + nameplate. Bright oumaji ghosts go.
+            gold_on_dark = lum < 140 and _city_label_marks(arr, cx, cy, bw, bh)
+            dark_stone = lum < 135
+            if tribe == "vengir":
+                pass
+            elif gold_on_dark or (dark_stone and (bool(name) or marks)):
+                pass
+            else:
+                continue
         cities.append(
             {
-                "id": f"c{len(cities)}",
+                "id": combat.city_id_for_tile(gx, gy),
                 "kind": "city",
                 "x": cx,
-                "y": max(0, cy - up // 2),
+                "y": building_y,
                 "plate_y": cy,
+                "tile": [gx, gy],
+                "tile_xy": [tile_xy[0], tile_xy[1]],
                 "n": n,
                 "w": bw,
                 "h": bh,
@@ -374,6 +397,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
+    if a.get("tile") is not None and a.get("tile") == b.get("tile"):
+        return 10**6
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir", "bardur"}:
         return max(dist, 96)

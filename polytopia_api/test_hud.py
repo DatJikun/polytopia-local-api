@@ -164,12 +164,16 @@ def test_entities_on_synthetic_map():
     assert units, units
     assert any(abs(u["x"] - 714) < 25 for u in units)
     assert all("tribe" in u and "owner" in u for u in units)
-    assert len(cities) >= 3, cities
+    assert len(cities) >= 2, cities
     owners = {c["owner"] for c in cities}
     assert "own" in owners and "enemy" in owners, cities
     tribes = {c["tribe"] for c in cities}
-    assert "bardur" in tribes and "oumaji" in tribes, cities
+    assert "bardur" in tribes, cities
     assert "vengir" in tribes, cities
+    yellow = [c for c in cities if 1160 <= int(c["x"]) <= 1260]
+    assert not yellow, yellow  # bright oumaji-looking ghost, no purple/gold-on-dark
+    assert all(isinstance(c.get("tile"), list) and len(c["tile"]) == 2 for c in cities), cities
+    assert all(str(c["id"]).startswith("c") and "_" in str(c["id"])[1:] for c in cities), cities
     frost = [c for c in cities if 170 <= int(c["x"]) <= 310]
     assert frost and all(c["tribe"] == "vengir" and c["owner"] == "enemy" for c in frost), cities
     assert villages, villages
@@ -203,8 +207,19 @@ def test_capture_and_recruit_targets():
         "ready": {"capture": True},
         "unit": {"capture": True},
     }
-    assert capture_target(obs) == (10, 20)
-    assert capture_target({"overlay": {}, "ready": {"capture": True}, "unit": {"capture": True}}) is None
+    assert capture_target(obs) is None  # map DO IT is not Capture
+    panel = {
+        "layout": {"frame": [1920, 1200]},
+        "overlay": {
+            "capture_blobs": [
+                {"x": 220, "y": 1100, "n": 200},
+                {"x": 400, "y": 400, "n": 800},
+            ]
+        },
+        "ready": {"capture": True},
+        "unit": {"capture": True},
+    }
+    assert capture_target(panel) == (220, 1100)
     noisy = {
         "overlay": {"do_it_blobs": [{"x": 400, "y": 400, "n": 800}], "capture_blobs": [{"x": 400, "y": 400, "n": 800}]},
         "ready": {},
@@ -328,12 +343,17 @@ def test_plan_priorities():
     obs = {
         "hud": {"stars": 8, "turn": 9},
         "unit": {**unit_idle, "capture": True},
-        "overlay": {**base_overlay, "do_it_pixel": True, "do_it_blobs": [{"x": 1, "y": 2}]},
+        "overlay": {
+            **base_overlay,
+            "capture_blobs": [{"x": 220, "y": 1100, "n": 200}],
+        },
         "confirm_ready": True,
         "move_marks": [],
         "fruit": [],
     }
-    assert plan(obs)["name"] == "capture"
+    cap = plan(obs)
+    assert cap["name"] == "capture"
+    assert cap["y"] >= 900
 
     obs = {
         "hud": {"stars": 8, "turn": 9},
@@ -407,6 +427,18 @@ def test_stable_entity_ids():
     assert sticky[0]["id"] == "c1"
     assert sticky[0]["tribe"] == "vengir"
     assert sticky[0]["name"] == "Disrof"
+    grid_prev = [
+        {"id": "c5_3", "tile": [5, 3], "x": 200, "y": 80, "tribe": "vengir", "owner": "enemy", "name": "Disrof"},
+        {"id": "c8_4", "tile": [8, 4], "x": 400, "y": 120, "tribe": "bardur", "owner": "own"},
+    ]
+    grid_nxt = [
+        {"id": "c8_4", "tile": [8, 4], "x": 402, "y": 118, "tribe": "bardur", "owner": "own"},
+        {"id": "c5_3", "tile": [5, 3], "x": 206, "y": 84, "tribe": "oumaji", "owner": "enemy", "name": None},
+    ]
+    hashed = stabilize(grid_nxt, grid_prev)
+    by_id = {c["id"]: c for c in hashed}
+    assert set(by_id) == {"c5_3", "c8_4"}
+    assert by_id["c5_3"]["tribe"] == "vengir" and by_id["c5_3"]["name"] == "Disrof"
 
 
 def test_gold_windows_are_not_oumaji():
@@ -643,7 +675,7 @@ def test_attack_garrison_hp_and_on_city():
     from polytopia_api.combat import unit_on_city
     from polytopia_api.commands import _hp_snapshot
 
-    city = {"id": "c1", "kind": "city", "x": 200, "y": 80, "name": "Disrof"}
+    city = {"id": "c1", "kind": "city", "x": 200, "y": 80, "name": "Disrof", "n": 999}
     obs = {
         "layout": {"frame": [1280, 800]},
         "units": [{"id": "u3", "kind": "unit", "x": 204, "y": 84, "hp": "full", "n": 40}],
@@ -652,15 +684,17 @@ def test_attack_garrison_hp_and_on_city():
     }
     hp = _hp_snapshot(obs, "c1", 200, 80)
     assert hp.get("id") == "u3" and hp.get("hp") == "full"
+    assert hp.get("n") == 40
     gone = {"layout": {"frame": [1280, 800]}, "units": [], "cities": [city]}
     after = _hp_snapshot(gone, "c1", 200, 80)
     assert after == {}
     on = unit_on_city(obs["units"], city, (1280, 800), {})
     assert on["ok"] is True
     far = unit_on_city([{"id": "u9", "x": 800, "y": 400}], city, (1280, 800), {})
-    assert far["ok"] is False
+    assert far["ok"] is False and far["reason"] == "not_standing_on_city"
     panel = unit_on_city([], city, (1280, 800), {"capture": True})
-    assert on["ok"] and panel["reason"] == "panel_capture"
+    assert panel["ok"] is False
+    assert panel["reason"] == "not_standing_on_city"
 
 
 def test_find_train_blob_1280():
@@ -690,6 +724,163 @@ def test_attack_marks_and_strike():
     assert raft["ok"] is False and raft["reason"] == "naval_no_land"
     melee = can_strike("warrior", (560, 410), (620, 415), "city", (1280, 800), marks)
     assert melee["ok"] is True
+
+
+def test_win_path_move_capture_attack():
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c5_3",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [5, 3],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+        "n": 999,
+    }
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    base = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_own": [],
+        "cities_enemy": [city],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    on_mark = {"id": "m0", "x": 202, "y": 81, "n": 50}
+    far_mark = {"id": "m1", "x": 400, "y": 400, "n": 50}
+    after_move = {
+        **base,
+        "move_marks": [on_mark, far_mark],
+        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": {"can_move": True, "no_actions": False, "unit": "warrior"}}
+
+    with patch.object(commands, "remember", return_value={
+        **base,
+        "move_marks": [on_mark, far_mark],
+        "units": [{"id": "u1", "x": 120, "y": 80}],
+        "unit": {"can_move": True, "no_actions": False},
+    }), patch.object(commands, "observe", return_value=after_move), patch.object(
+        commands, "select_unit", return_value=selected
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert r["ok"] is True and r["stood_on_city"] is True
+    assert clicks == [(202, 81)], clicks
+
+    clicks.clear()
+    no_mark_state = {
+        **base,
+        "move_marks": [far_mark],
+        "units": [{"id": "u1", "x": 120, "y": 80}],
+        "unit": {"can_move": True},
+    }
+    with patch.object(commands, "remember", return_value=no_mark_state), patch.object(
+        commands, "observe", return_value=no_mark_state
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert r["ok"] is False and r["reason"] == "no_mark_on_city_tile"
+    assert r["stood_on_city"] is False
+    assert "move_marks" in r and r.get("city_xy")
+    assert clicks == []
+
+    panel_blob = {"x": 180, "y": 740, "n": 200}
+    far_unit = {
+        **base,
+        "units": [{"id": "u1", "x": 800, "y": 400, "owner": "own"}],
+        "unit": {"capture": True, "no_actions": False},
+        "ready": {"capture": True},
+        "overlay": {"capture_blobs": [panel_blob, {"x": 400, "y": 400, "n": 800}]},
+    }
+    with patch.object(commands, "remember", return_value=far_unit), patch.object(
+        commands, "observe", return_value=far_unit
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.capture(city_id="c5_3")
+    assert r["ok"] is False and r["reason"] == "not_standing_on_city"
+    assert r["captured"] is False
+    assert clicks == []
+
+    on_city = {
+        **base,
+        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
+        "unit": {"capture": True, "no_actions": False},
+        "ready": {"capture": True},
+        "overlay": {"capture_blobs": [panel_blob]},
+    }
+    captured_state = {
+        **on_city,
+        "cities_enemy": [],
+        "cities_own": [{**city, "owner": "own"}],
+        "cities": [{**city, "owner": "own"}],
+    }
+    with patch.object(commands, "remember", return_value=on_city), patch.object(
+        commands, "observe", return_value=captured_state
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.capture(city_id="c5_3")
+    assert r["ok"] is True and r["captured"] is True
+    assert clicks == [(180, 740)], clicks
+
+    clicks.clear()
+    stale_marks = [{"x": 202, "y": 81, "n": 40}]
+    idle = {
+        **base,
+        "units": [{"id": "u9", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "enemy"}],
+        "unit": {"no_actions": True, "unit": "warrior", "can_move": False},
+        "attack_marks": stale_marks,
+    }
+    with patch.object(commands, "remember", return_value=idle), patch.object(
+        commands, "observe", return_value=idle
+    ), patch.object(
+        commands, "select_unit", return_value={"ok": True, "unit": idle["unit"]}
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.attack(from_id="u2", city_id="c5_3")
+    assert r["ok"] is False and r["reason"] == "no_actions"
+    assert r["elapsed_s"] < 8
+    assert clicks == []
+
+    garrison = {"id": "u9", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "enemy"}
+    mark_garrison = {"x": 203, "y": 83, "n": 40}
+    mark_plate = {"x": 200, "y": 140, "n": 40}
+    before_atk = {
+        **base,
+        "units": [garrison, {"id": "u2", "x": 140, "y": 80, "owner": "own"}],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+        "attack_marks": [mark_plate, mark_garrison],
+    }
+    after_atk = {
+        **before_atk,
+        "units": [{**garrison, "hp": 7, "n": 28}, {"id": "u2", "x": 140, "y": 80, "owner": "own"}],
+    }
+    with patch.object(commands, "remember", return_value=before_atk), patch.object(
+        commands, "observe", return_value=after_atk
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": before_atk["unit"], "attack_marks": before_atk["attack_marks"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.attack(from_id="u2", city_id="c5_3")
+    assert r["ok"] is True and r["hp_dropped"] is True
+    assert r["elapsed_s"] < 8
+    assert r["hp_before"]["id"] == "u9" and r["hp_before"]["hp"] == 10
+    assert r["hp_after"]["hp"] == 7
+    assert clicks == [(203, 83)], clicks
 
 
 def test_dock_zone_blocks_end_turn_pixels():
@@ -725,5 +916,6 @@ if __name__ == "__main__":
     test_doit_blobs_ignore_map_noise()
     test_attack_garrison_hp_and_on_city()
     test_attack_marks_and_strike()
+    test_win_path_move_capture_attack()
     test_dock_zone_blocks_end_turn_pixels()
     print("ok")

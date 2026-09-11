@@ -201,6 +201,27 @@ def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
     return _color_buttons(arr, DOIT_LO, DOIT_HI, "do_it", 0.34, 0.78, 0.30, 0.90, 32, 90)
 
 
+def find_capture_panel_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
+    """Capture lives in UNIT_CROP (bottom-left panel), not on the map."""
+    h, w = arr.shape[:2]
+    y0, y1 = int(h * 0.78), h
+    x0, x1 = 0, int(w * 0.52)
+    region = arr[y0:y1, x0:x1]
+    if region.size == 0:
+        return []
+    m = np.all((region >= DOIT_LO) & (region <= DOIT_HI), axis=2)
+    ys, xs = np.where(m)
+    rad, mn = _cluster_params(arr, 28, 40)
+    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(24, rad))
+    out: list[dict[str, Any]] = []
+    for n, cx, cy in clusters:
+        if n < max(40, mn) or coords.in_dock_zone(cx, cy):
+            continue
+        out.append({"kind": "capture", "x": cx, "y": cy, "n": n})
+    out.sort(key=lambda b: -int(b["n"]))
+    return out[:2]
+
+
 def find_train_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
     """TRAIN is a live-frame UI blob — not 2/3 of (1110, 790), which is the map at 1280."""
     return _color_buttons(arr, TRAIN_LO, TRAIN_HI, "train", 0.38, 0.82, 0.28, 0.92, 28, 70)
@@ -317,6 +338,7 @@ def overlay_flags(arr: np.ndarray) -> dict[str, Any]:
     # In-game corner is black; overlays draw a white back circle
     back_lit = br + bg + bb >= 400
     blobs = find_doit_buttons(arr)
+    capture_blobs = find_capture_panel_buttons(arr)
     train_blobs = find_train_buttons(arr)
     return {
         "do_it_pixel": doit,
@@ -326,7 +348,7 @@ def overlay_flags(arr: np.ndarray) -> dict[str, Any]:
         "train_rgb": train_px,
         "back_rgb": back_px,
         "do_it_blobs": blobs,
-        "capture_blobs": blobs,
+        "capture_blobs": capture_blobs,
         "train_blobs": train_blobs,
         "attack_marks": find_attack_marks(arr)[:16],
     }

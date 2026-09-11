@@ -45,18 +45,60 @@ def _ids(prefix: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _tile_key(d: dict[str, Any]) -> tuple[int, int] | None:
+    t = d.get("tile")
+    if isinstance(t, (list, tuple)) and len(t) >= 2:
+        try:
+            return int(t[0]), int(t[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _is_grid_city_id(ident: Any) -> bool:
+    s = str(ident or "")
+    return len(s) > 2 and s[0] == "c" and "_" in s[1:]
+
+
+def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
+    if src.get("name") and not d.get("name"):
+        d["name"] = src["name"]
+    if str(src.get("tribe") or "") == "vengir" and str(d.get("tribe") or "") == "oumaji":
+        d["tribe"] = "vengir"
+        d["owner"] = "own" if str(src.get("owner") or "") == "own" else "enemy"
+
+
 def stabilize(
     items: list[dict[str, Any]],
     prev: list[dict[str, Any]] | None,
     max_dist: int = 56,
 ) -> list[dict[str, Any]]:
-    """Keep city/unit ids stable across frames when the blob barely moved."""
+    """Keep ids stable. Cities match by tile (grid hash), not list index."""
     if not items:
         return []
     used: set[str] = set()
     out: list[dict[str, Any]] = []
     for it in items:
         d = dict(it)
+        tile = _tile_key(d)
+        tile_hit = None
+        if tile is not None:
+            for p in prev or []:
+                pid = str(p.get("id") or "")
+                if not pid or pid in used:
+                    continue
+                if _tile_key(p) == tile:
+                    tile_hit = p
+                    break
+        if tile_hit and tile_hit.get("id"):
+            if not d.get("id"):
+                d["id"] = tile_hit["id"]
+            _sticky_city_fields(d, tile_hit)
+            d["stable"] = True
+            used.add(str(d["id"]))
+            used.add(str(tile_hit["id"]))
+            out.append(d)
+            continue
         best = None
         best_d = max_dist
         for p in prev or []:
@@ -71,14 +113,11 @@ def stabilize(
                 best_d = int(dist ** 0.5)
                 best = p
         if best and best.get("id"):
-            d["id"] = best["id"]
-            if best.get("name") and not d.get("name"):
-                d["name"] = best["name"]
-            # Gold windows / stars must not flip a Vengir city to Oumaji next frame.
-            if str(best.get("tribe") or "") == "vengir" and str(d.get("tribe") or "") == "oumaji":
-                d["tribe"] = "vengir"
-                d["owner"] = "own" if str(best.get("owner") or "") == "own" else "enemy"
+            if not _is_grid_city_id(d.get("id")):
+                d["id"] = best["id"]
+            _sticky_city_fields(d, best)
             d["stable"] = True
+            used.add(str(d["id"]))
             used.add(str(best["id"]))
         else:
             named = None
@@ -92,8 +131,11 @@ def stabilize(
                         named = p
                         break
             if named:
-                d["id"] = named["id"]
+                if not d.get("id"):
+                    d["id"] = named["id"]
+                _sticky_city_fields(d, named)
                 d["stable"] = True
+                used.add(str(d["id"]))
                 used.add(str(named["id"]))
             else:
                 d["stable"] = False
@@ -131,7 +173,8 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
     mapped = entities.observe_map(arr)
     prev = _LAST
     units = stabilize(_ids("u", mapped["units"]), (prev or {}).get("units"))
-    cities = stabilize(_ids("c", mapped["cities"]), (prev or {}).get("cities"))
+    # City ids are grid hashes (c{gx}_{gy}); never reindex as c0/c1.
+    cities = stabilize(list(mapped["cities"]), (prev or {}).get("cities"))
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     attack_marks = _ids("a", pix.get("attack_marks") or overlay.get("attack_marks") or [])
@@ -144,7 +187,8 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         or unit.get("train")
         or unit.get("harvest")
         or (overlay.get("train_blobs") and unit.get("train"))
-        or (overlay.get("do_it_blobs") and (unit.get("capture") or unit.get("harvest")))
+        or (overlay.get("capture_blobs") and unit.get("capture"))
+        or (overlay.get("do_it_blobs") and unit.get("harvest"))
     )
     info = driver.find_window()
     payload = {

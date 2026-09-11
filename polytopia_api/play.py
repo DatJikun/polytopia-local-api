@@ -38,8 +38,6 @@ def plan(obs: dict[str, Any]) -> dict[str, Any]:
         hit = commands.capture_target(obs)
         if hit:
             return {"name": "capture", "x": hit[0], "y": hit[1]}
-        if overlay.get("do_it_pixel"):
-            return {"name": "capture", "x": coords.DO_IT[0], "y": coords.DO_IT[1]}
     if confirm_ready and (unit.get("harvest") or overlay.get("do_it_pixel") or overlay.get("do_it_blobs")):
         blobs = overlay.get("do_it_blobs") or []
         x, y = (blobs[0]["x"], blobs[0]["y"]) if blobs else tuple(coords.DO_IT)
