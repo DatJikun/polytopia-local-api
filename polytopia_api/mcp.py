@@ -87,7 +87,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_capture",
-        "description": "Press Capture blob when a unit stands ON the city (city_id). Building first, not scaled DO IT.",
+        "description": "Press Capture blob when a unit stands ON the city (same standing gate as /move-to, including HP-bar offset). If the panel is closed, click the occupant foot first. Not scaled DO IT.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -98,7 +98,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_recruit",
-        "description": "Select city_id (nameplate then city tile) and click a UNIT_CROP TRAIN blob. Marks observe under 8s (no HUD OCR hang). Radial unit portraits still need a map click.",
+        "description": "Select city_id (city tile/foot first, plate fallback) and click a UNIT_CROP TRAIN blob. Marks observe under 8s (no HUD OCR hang). Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {

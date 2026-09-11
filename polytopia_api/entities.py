@@ -69,6 +69,26 @@ def villages_enabled() -> bool:
     return os.environ.get("POLYTOPIA_VILLAGES", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_magenta_roof_rgb(r: int, g: int, b: int) -> bool:
+    """True Disrof / dark-tile magenta — not Bardur wood with a wine shadow.
+
+    classify_tribe(vengir) is looser (purple>=10) so wall pixels still vote.
+    Roof evidence needs a real green-deficit: (88,70,82) is wood shade;
+    (150,74,144) / (70,35,80) / (36,20,48) are roofs.
+    Garrison-cover dark purple (48,36,58) must still count (T37 cover_roof).
+    """
+    purple = (r + b) / 2 - g
+    return (
+        g <= 95
+        and max(r, b) >= 36
+        and max(r, g, b) <= 190
+        and min(r, b) >= 20
+        and purple >= 16
+        and (max(r, b) - g) >= 20
+        and abs(r - b) <= 60
+    )
+
+
 def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tuple[str, list[int]]:
     """Majority tribe in a patch — one water pixel must not become Imperius.
 
@@ -98,9 +118,19 @@ def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tup
     bardur_n = votes.get("bardur", 0)
     total = sum(votes.values())
     mean_lum = float(patch.astype(np.int32).mean())
-    # Purple roof is decisive (Disrof magenta). A handful of wine pixels on
-    # Bardur wood must not steal cities_own (live: own dropped to 2 vs many).
-    if vengir_n >= 3 or (total and vengir_n >= 0.08 * total):
+    mag_n = 0
+    for py in range(patch.shape[0]):
+        for px in range(patch.shape[1]):
+            pix = [int(v) for v in patch[py, px]]
+            if _is_magenta_roof_rgb(*pix[:3]):
+                mag_n += 1
+    # Purple roof is decisive (Disrof magenta). Wine-shadow on Bardur wood
+    # must not steal cities_own (live T46: own dropped to 2–3 vs many).
+    if bardur_n and bardur_n >= vengir_n and (not total or bardur_n >= 0.35 * total):
+        if mag_n >= 12 and mag_n > bardur_n:
+            return "vengir", rgb
+        return "bardur", rgb
+    if vengir_n >= 8 or (total and vengir_n >= 0.12 * total):
         if bardur_n > vengir_n * 3 and bardur_n >= 0.45 * total and vengir_n < 12:
             return "bardur", rgb
         return "vengir", rgb
@@ -603,15 +633,19 @@ def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[
     vengir_n = votes.get("vengir", 0)
     bardur_n = votes.get("bardur", 0)
     total = sum(votes.values())
-    if bardur_n and bardur_n >= vengir_n * 3 and (not total or bardur_n >= 0.40 * total) and vengir_n < 12:
+    # Plurality wood wins. The old 3× rule let wine-shadow roofs eat Bardur.
+    if bardur_n and bardur_n >= vengir_n and (not total or bardur_n >= 0.35 * total):
         return "bardur", rgb
-    if vengir_n >= 8 or (total and vengir_n >= 0.08 * total):
+    if vengir_n >= 8 or (total and vengir_n >= 0.12 * total):
         return "vengir", rgb
     return max(votes, key=votes.get), rgb
 
 
 def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
-    """Magenta/wine roof can sit well above the frost plate (outside radius=14)."""
+    """Magenta/wine roof can sit well above the frost plate (outside radius=14).
+
+    Loose classify_tribe purple (wine-shadow on Bardur wood) is not a roof.
+    """
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
     if crop.size < 20:
@@ -619,13 +653,14 @@ def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
     r = crop[:, :, 0].astype(np.int32)
     g = crop[:, :, 1].astype(np.int32)
     b = crop[:, :, 2].astype(np.int32)
-    purple = (r + b) / 2 - g
+    purple = (r + b) / 2.0 - g
     mag = (
-        (g <= 105)
-        & (np.maximum(r, b) >= 40)
+        (g <= 95)
+        & (np.maximum(r, b) >= 36)
         & (np.maximum(np.maximum(r, g), b) <= 190)
-        & (np.minimum(r, b) >= 28)
-        & (purple >= 10)
+        & (np.minimum(r, b) >= 20)
+        & (purple >= 16)
+        & ((np.maximum(r, b) - g) >= 20)
         & (np.abs(r - b) <= 60)
     )
     return int(mag.sum())
@@ -1025,9 +1060,39 @@ def session_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
 MAX_CITIES_OWN = 24
 
 
+def _drop_split_plate_own(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
+    """Grey-stone half of a Disrof nameplate must not become cities_own.
+
+    Live T37 cover_roof: the left frost fragment (w≈35, gold_star only) sat
+    ~46px from Disrof and hashed a different tile, so cross-owner merge
+    refused. A real Bardur neighbor is a full plate (w≳80).
+    """
+    disrofs = [c for c in cities if _is_disrof_hit(c) and c.get("owner") == "enemy"]
+    if not disrofs:
+        return cities
+    out: list[dict[str, Any]] = []
+    for c in cities:
+        if (
+            c.get("owner") == "own"
+            and int(c.get("w") or 99) <= 44
+            and int(c.get("roof_n") or 0) < 8
+            and int(c.get("gold_n") or 0) < 8
+        ):
+            cx, cy = int(c["x"]), int(c["y"])
+            split = False
+            for d in disrofs:
+                if (cx - int(d["x"])) ** 2 + (cy - int(d["y"])) ** 2 <= dist * dist:
+                    split = True
+                    break
+            if split:
+                continue
+        out.append(c)
+    return out
+
+
 def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every real enemy city. A 12-own map must not empty cities_enemy."""
-    cities = _cap_vengir(_dedupe_cities(cities))
+    cities = _cap_vengir(_drop_split_plate_own(_dedupe_cities(cities)))
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     other = [c for c in cities if c.get("owner") not in {"own", "enemy"}]

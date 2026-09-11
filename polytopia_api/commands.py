@@ -206,17 +206,21 @@ def _city_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
 
 
 def _recruit_click_points(hit: dict[str, Any], frame: tuple[int, int]) -> list[tuple[int, int, str]]:
-    """Nameplate first, then the roof/tile that actually opens TRAIN.
+    """City tile/foot first — that opens TRAIN. Plate is a fallback.
 
-    Live T46: plate/building/plate_below ran and TRAIN still stayed hidden.
-    Capture avoids the roof on purpose (that click is the city panel).
+    Live T46: plate/building/plate_below ran and TRAIN stayed hidden; the
+    city tile opened the UNIT_CROP pill. Trying plate first burned the <8s
+    budget before the tile click.
     """
-    points = list(_city_click_points(hit))
-    seen = {(int(x), int(y)) for x, y, _ in points}
+    x = int(hit["x"])
+    plate = int(hit.get("plate_y") or hit["y"])
+    building = int(hit["y"])
+    points: list[tuple[int, int, str]] = []
+    seen: set[tuple[int, int]] = set()
 
-    def _add(x: int, y: int, where: str) -> None:
-        key = (int(x), int(y))
-        if any(abs(key[0] - px) < 6 and abs(key[1] - py) < 6 for px, py in seen):
+    def _add(px: int, py: int, where: str) -> None:
+        key = (int(px), int(py))
+        if any(abs(key[0] - sx) < 6 and abs(key[1] - sy) < 6 for sx, sy in seen):
             return
         points.append((key[0], key[1], where))
         seen.add(key)
@@ -227,6 +231,10 @@ def _recruit_click_points(hit: dict[str, Any], frame: tuple[int, int]) -> list[t
     foot = combat.city_walk_center(hit, frame)
     if foot:
         _add(foot[0], foot[1], "city_foot")
+    _add(x, plate, "plate")
+    if abs(building - plate) >= 6:
+        _add(x, building, "building")
+    _add(x, plate + 10, "plate_below")
     return points
 
 
@@ -1524,7 +1532,29 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         return {"ok": False, "name": "capture", "reason": f"no entity {city_id}", "city_id": city_id}
     before = remember() or observe()
     frame = _frame(before)
-    on = _stood_on_city(before, hit, frame)
+    garrison = _enemy_garrison(before, hit, frame)
+    if garrison:
+        occ = _occupied_fields(before, hit, frame, None, city_id, garrison=garrison)
+        return {
+            "ok": False,
+            "name": "capture",
+            "reason": occ["reason"],
+            "hint": occ["hint"],
+            "next": occ["next"],
+            "next_call": occ["next_call"],
+            "garrison": occ["garrison"],
+            "garrison_id": occ["garrison_id"],
+            "attacker_id": occ["attacker_id"],
+            "city_id": city_id,
+            "unit": before.get("unit"),
+            "captured": False,
+            "stood_on_city": False,
+        }
+    # Same ON-tile radius as /move-to confirmation (STANDING_HEX=0.8). Tight
+    # 0.55 missed live T46: move-to stood_on_city:true then capture
+    # not_standing_on_city because the HP bar sat ~0.7 hex off the walk foot.
+    # Do not pass allow_panel — leftover Capture OCR must not count a far unit.
+    on = _stood_on_city(before, hit, frame, max_hex=combat.STANDING_HEX)
     panel_opened = False
     panel_capture = _panel_capture_ready(before)
     if not on.get("ok"):
@@ -1541,29 +1571,12 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
             select_unit(id=str(uid), light=True)
             before = remember() or before
             frame = _frame(before)
-            on = _stood_on_city(before, hit, frame)
+            on = _stood_on_city(before, hit, frame, max_hex=combat.STANDING_HEX)
+            if not on.get("ok"):
+                on = occupant
             panel_capture = _panel_capture_ready(before)
             panel_opened = True
     if not on.get("ok"):
-        garrison = _enemy_garrison(before, hit, frame)
-        if garrison:
-            occ = _occupied_fields(before, hit, frame, None, city_id, garrison=garrison)
-            return {
-                "ok": False,
-                "name": "capture",
-                "reason": occ["reason"],
-                "hint": occ["hint"],
-                "next": occ["next"],
-                "next_call": occ["next_call"],
-                "garrison": occ["garrison"],
-                "garrison_id": occ["garrison_id"],
-                "attacker_id": occ["attacker_id"],
-                "city_id": city_id,
-                "on_city": on,
-                "unit": before.get("unit"),
-                "captured": False,
-                "stood_on_city": False,
-            }
         return {
             "ok": False,
             "name": "capture",
@@ -1593,7 +1606,7 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         before, opened = _open_capture_panel(before, occupant)
         panel_opened = panel_opened or opened
         frame = _frame(before)
-        refreshed = _stood_on_city(before, hit, frame)
+        refreshed = _stood_on_city(before, hit, frame, max_hex=combat.STANDING_HEX)
         if refreshed.get("ok"):
             on = refreshed
         panel_capture = _panel_capture_ready(before)
@@ -1837,6 +1850,22 @@ def attack(
         )
 
     frame, (x, y), marks, garrison, arr, mark, d_hex, verdict, occ, panel = _refresh_aim(before)
+    if dest and garrison and str(garrison.get("owner") or "") == "own":
+        return {
+            "ok": False,
+            "name": "attack",
+            "reason": "own_garrison",
+            "hint": "city_id is labeled enemy but the tile unit is own — re-observe; do not strike Bardur",
+            "from_id": from_id,
+            "to_id": to_id or city_id,
+            "city_id": dest.get("id") if dest else city_id,
+            "dest": dest,
+            "garrison": garrison,
+            "garrison_id": str(garrison.get("id") or "") or None,
+            "hp_dropped": False,
+            "elapsed_s": _elapsed(),
+            "unit": panel,
+        }
     if x is None or y is None:
         return {
             "ok": False,
@@ -2033,7 +2062,7 @@ def recruit(
     unit: str | None = None,
     space: str = "screen",
 ) -> dict[str, Any]:
-    """Select city_id (nameplate first) and click a detected TRAIN blob.
+    """Select city_id (tile/foot first, plate fallback) and click a detected TRAIN blob.
 
     Live: full HUD observe after every plate click blew the HTTP budget.
     Marks-mode overlay still sees TRAIN pills; stop under ~8s like /attack.
