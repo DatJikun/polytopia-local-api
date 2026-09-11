@@ -28,6 +28,10 @@ def test_parse_hud():
     assert p["stars"] == 0 and p["turn"] == 9 and p["score"] == 1800
     p = parse_hud("1,8O0 *7 l7")
     assert p["score"] == 1800 and p["stars"] == 7 and p["turn"] == 17
+    p = parse_hud("Game Mode: Domination\nEasy")
+    assert p["game_stats"] is True
+    p = parse_hud("Score Stars (+7) Turn\n1,800 *5 8")
+    assert p.get("game_stats") is False
 
 
 def test_parse_unit():
@@ -51,6 +55,8 @@ def test_parse_unit():
     assert u["disband"] and not u["train"] and u["unit"] == "warrior"
     u = parse_unit_panel("Bardur Raft\nSelect a blue mark to move.")
     assert u["unit"] == "raft" and u["can_move"]
+    u = parse_unit_panel("Game Mode: Domination Easy")
+    assert u["game_stats"] and u["settings"] and not u["train"]
 
 
 def test_water_vs_move():
@@ -1101,6 +1107,16 @@ def test_find_train_blob_1280():
     assert brand_blobs, brand_blobs
     assert abs(brand_blobs[0]["x"] - 200) < 30
     assert brand_blobs[0]["y"] >= 700
+    # GAME_STATS dock at 1280 is (625, 738) — must not cluster as TRAIN.
+    stats = Image.new("RGB", (1280, 800), (20, 20, 20))
+    sd = ImageDraw.Draw(stats)
+    gx, gy = tuple(coords.GAME_STATS)
+    sd.rectangle((gx - 18, gy - 12, gx + 18, gy + 12), fill=(10, 122, 204))
+    assert not find_train_panel_buttons(as_rgb(stats)), find_train_panel_buttons(as_rgb(stats))
+    sd.rectangle((160, 720, 240, 770), fill=(10, 122, 204))
+    kept = find_train_panel_buttons(as_rgb(stats))
+    assert kept and abs(kept[0]["x"] - 200) < 30, kept
+    assert all(abs(int(b["x"]) - gx) > 30 for b in kept), kept
 
 
 def test_attack_marks_and_strike():
@@ -2705,6 +2721,126 @@ def test_recruit_waits_for_train_after_nameplate():
     reset_obs()
 
 
+def test_recruit_ignores_game_stats_blob():
+    """Live: /recruit ok/confirmed but HUD became Game Mode: Domination."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c7_16",
+        "kind": "city",
+        "x": 248,
+        "y": 450,
+        "plate_y": 450,
+        "tile": [7, 16],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    gx, gy = tuple(coords.GAME_STATS)
+    clicks: list[tuple[int, int]] = []
+
+    def fake_observe(*args, **kwargs):
+        return {
+            "layout": {"frame": [1280, 800]},
+            "overlay": {
+                "train_blobs": [
+                    {"x": gx, "y": gy, "n": 400},
+                    {"x": 184, "y": 740, "n": 180},
+                ]
+            },
+            "unit": {"train": True, "raw": "Train"},
+            "ready": {"train": True},
+            "hud": {},
+            "turn_diff": None,
+        }
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands, "remember", return_value=None), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.recruit(city_id="c7_16")
+    assert r["ok"] is True, r
+    assert (184, 740) in clicks, clicks
+    assert all(abs(x - gx) > 24 or abs(y - gy) > 24 for x, y in clicks), clicks
+    reset_obs()
+
+
+def test_recruit_backs_off_game_stats_overlay():
+    """If a click still opens Game Stats, BACK and do not return ok/confirmed."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c7_16",
+        "kind": "city",
+        "x": 248,
+        "y": 450,
+        "plate_y": 450,
+        "tile": [7, 16],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+    backs = {"n": 0}
+    n_obs = {"n": 0}
+
+    def fake_observe(*args, **kwargs):
+        n_obs["n"] += 1
+        if n_obs["n"] == 1:
+            return {
+                "layout": {"frame": [1280, 800]},
+                "overlay": {"train_blobs": [{"x": 184, "y": 740, "n": 180}]},
+                "unit": {"train": True, "raw": "Train"},
+                "ready": {"train": True},
+                "hud": {},
+                "turn_diff": None,
+            }
+        return {
+            "layout": {"frame": [1280, 800]},
+            "overlay": {"train_blobs": []},
+            "unit": {"train": False, "raw": "Game Mode: Domination", "game_stats": True},
+            "ready": {},
+            "hud": {"raw": "Game Mode: Domination", "game_stats": True},
+            "turn_diff": None,
+        }
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    def fake_back():
+        backs["n"] += 1
+        return {"ok": True}
+
+    with patch.object(commands, "remember", return_value=None), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ), patch.object(commands.driver, "back", side_effect=fake_back):
+        r = commands.recruit(city_id="c7_16")
+    assert r["ok"] is False, r
+    assert "game_stats" in str(r.get("reason") or "")
+    assert "game_stats" in (r.get("dismissed") or [])
+    assert backs["n"] >= 1
+    assert r.get("confirmed") is not True
+    reset_obs()
+
+
 def test_adjacent_bardur_cities_stay_two_own():
     """Live: cities_own 3–4 while neighboring Bardur sat ~1 hex apart (banners kiss)."""
     from polytopia_api.detect import as_rgb
@@ -3965,6 +4101,9 @@ def test_dock_zone_blocks_end_turn_pixels():
     coords.set_frame(1280, 800)
     assert coords.in_dock_zone(765, 746)
     assert not coords.in_dock_zone(400, 400)
+    assert coords.in_dock_zone(*coords.GAME_STATS)
+    assert coords.in_dock_zone(*coords.SETTINGS)
+    assert not coords.in_dock_zone(184, 740)  # UNIT_CROP TRAIN
     zone = coords.dock_zone()
     assert zone["x0"] > 500 and zone["y0"] > 650
 
@@ -4909,6 +5048,8 @@ if __name__ == "__main__":
     test_recruit_clicks_brand_blue_panel_pill()
     test_recruit_clicks_train_despite_leftover_unit_ocr()
     test_recruit_waits_for_train_after_nameplate()
+    test_recruit_ignores_game_stats_blob()
+    test_recruit_backs_off_game_stats_overlay()
     test_adjacent_bardur_cities_stay_two_own()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
