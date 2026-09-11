@@ -1626,6 +1626,76 @@ def test_session_cities_keeps_sticky_enemy_when_own_is_full():
     assert hit.get("tile") == [13, 10]
 
 
+def test_twelve_own_cities_do_not_drop_enemy_or_flood_frost():
+    """T45/T46: 12 Bardur + Disrof-class + frost swarm. Real enemies stay; frost ≤2."""
+    from polytopia_api.entities import session_cities
+
+    own = [_own_city(i) for i in range(12)]
+    enemies = [
+        _enemy_city("c20_5", [20, 5], 900, 300),
+        _enemy_city("c22_8", [22, 8], 1100, 520, evidence=["magenta_roof", "frost_plate"]),
+        _enemy_city("c18_3", [18, 3], 700, 640, evidence=["gold_lamps", "frost_plate"]),
+    ]
+    frost = [
+        _enemy_city(f"c3_{i}", [3, i], 40 + i * 30, 80, evidence=["frost_plate"], n=50, confidence=0.64)
+        for i in range(5)
+    ]
+    out = session_cities(own + enemies + frost)
+    enemy = [c for c in out if c.get("owner") == "enemy"]
+    ids = {c["id"] for c in enemy}
+    assert {"c20_5", "c22_8", "c18_3"} <= ids, out
+    assert all(c.get("tribe") == "vengir" and c.get("tile") for c in enemy if c["id"] in {"c20_5", "c22_8", "c18_3"})
+    assert len([c for c in out if c.get("owner") == "own"]) == 12
+    frost_only = [
+        c
+        for c in enemy
+        if "magenta_roof" not in (c.get("evidence") or [])
+        and "gold_lamps" not in (c.get("evidence") or [])
+    ]
+    assert len(frost_only) <= 2, frost_only
+
+
+def test_late_domination_observe_keeps_visible_vengir():
+    """Pixel contract: 12 Bardur on screen + Disrof/Rzgórst still fill cities_enemy."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    bardur_xy = [
+        (180, 200), (420, 200), (660, 200), (900, 200),
+        (180, 420), (420, 420), (660, 420), (900, 420),
+        (180, 640), (420, 640), (660, 640), (900, 640),
+    ]
+    for cx, py in bardur_xy:
+        _draw_bardur_city(d, cx, py)
+    _draw_disrof_city(d, 1500, 280)   # Disrof / Disrot
+    _draw_disrof_city(d, 1740, 520)   # Rzgórst-class
+    for x0, y0 in ((80, 160), (1100, 170), (1280, 360), (1400, 700)):
+        d.rectangle((x0, y0, x0 + 110, y0 + 22), fill=(180, 180, 178))
+        d.rectangle((x0 + 12, y0 + 6, x0 + 18, y0 + 16), fill=(40, 40, 40))
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 12, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert vengir, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+    assert all(c.get("city_id") == c.get("id") and c.get("tile") and c.get("tile_xy") for c in vengir), vengir
+    xs = [int(c["x"]) for c in vengir]
+    assert any(abs(x - 1500) < 80 for x in xs), vengir
+    assert any(abs(x - 1740) < 80 for x in xs), vengir
+    strong = [
+        c
+        for c in vengir
+        if "magenta_roof" in (c.get("evidence") or []) or "gold_lamps" in (c.get("evidence") or [])
+    ]
+    assert len(strong) >= 2, vengir
+    frost_only = [c for c in vengir if c not in strong]
+    assert len(frost_only) <= 2, frost_only
+
+
 def test_nearby_vengir_cities_do_not_merge():
     """Disrof + Rzgórst within the old 80px vengir merge must stay two cities."""
     from polytopia_api.entities import session_cities
@@ -3628,6 +3698,8 @@ if __name__ == "__main__":
     test_t44_dark_tile_vengir_stay_cities_enemy()
     test_dark_magenta_roof_classifies_vengir()
     test_session_cities_keeps_sticky_enemy_when_own_is_full()
+    test_twelve_own_cities_do_not_drop_enemy_or_flood_frost()
+    test_late_domination_observe_keeps_visible_vengir()
     test_nearby_vengir_cities_do_not_merge()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
