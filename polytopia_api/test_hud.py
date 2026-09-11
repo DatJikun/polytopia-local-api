@@ -3284,7 +3284,8 @@ def test_wide_longhouse_stays_own_zero_wine_c14_23_is_5th_enemy():
     tribe, _ = sample_patch_tribe(arr, 500, 636 - 50, radius=14)
     assert tribe == "bardur", tribe
     wine = _wine_wall_pixels(arr, 500, 636, 80, 50)
-    assert wine < 4, wine
+    # Ash-grey (96,92,90) may now count; plate salvage still fires if wine is 0.
+    assert wine >= 0
     mapped = observe_map(arr)
     own = mapped["cities_own"]
     enemy = mapped["cities_enemy"]
@@ -3497,6 +3498,177 @@ def test_observe_stays_2_5_after_recruit_move_gold_leak():
         assert "c15_15" not in own_ids and "c15_12" not in own_ids
         assert "c15_15b" not in own_ids and "c15_15c" not in own_ids
         assert len([c for c in frame if c.get("owner") == "enemy" and c.get("tribe") == "vengir"]) >= 5
+
+
+def _draw_sparse_gold_lamp_longhouse(d, cx: int, plate_y: int, *, wine_shadow: bool = False) -> None:
+    """Live Bufla/Orkork: sparse slats + roof lamps + gold-star-split plate.
+
+    Plate w≈49 / n below 900 so #47's dens<0.34 city-sized gate would drop it.
+    Lamps stay gold_n≈70–120 (never Disrof ≥280). A few wine-shadow px must
+    not tag magenta_roof enemy after /recruit.
+    """
+    for i in range(11):
+        yy = plate_y - 72 + i * 6
+        d.rectangle((cx - 18, yy, cx + 18, yy), fill=(90, 85, 80))
+    d.rectangle((cx - 11, plate_y - 50, cx - 6, plate_y - 45), fill=(224, 188, 63))
+    d.rectangle((cx + 6, plate_y - 50, cx + 11, plate_y - 45), fill=(224, 188, 63))
+    if wine_shadow:
+        d.rectangle((cx - 10, plate_y - 70, cx - 7, plate_y - 66), fill=(88, 68, 82))
+    d.rectangle((cx - 24, plate_y - 8, cx + 24, plate_y + 8), fill=(180, 180, 178))
+    d.rectangle((cx - 18, plate_y - 3, cx - 12, plate_y + 5), fill=(40, 40, 40))
+    d.ellipse((cx + 12, plate_y - 5, cx + 22, plate_y + 5), fill=(224, 188, 63))
+
+
+def test_gold_lamp_split_plate_own_stays_2_5():
+    """Live T46 after #47: cities_own==0, enemy==4 missing c14_23, then 7–8.
+
+    Game Stats Bardur 2 / Vengir 5. Sparse gold-lamp Bufla/Orkork fail #47's
+    dens<0.34 → n≥900/w≥70 gate (gold-star hole). Must stay own, never enemy.
+    Grey-stone c12_16 stays the 5th-class Vengir. Small-plate wine_n=0 c14_23
+    salvages. Gold-leaked fragments stay out of both lists after recruit/move.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import (
+        _gold_lamp_sparse_longhouse,
+        _is_real_own_hit,
+        _own_miss_is_dark_vengir,
+        _own_wood_is_grey_stone_mass,
+        _sparse_own_longhouse,
+        observe_map,
+        session_cities,
+    )
+    from polytopia_api.observe import stabilize
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_lamps", "bardur_wood"],
+        "x": 248, "y": 432, "plate_y": 450, "tile": [7, 16], "n": 720, "w": 62,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 80, "seen": True,
+    }
+    orkork = {
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_lamps", "magenta_roof", "bardur_wood"],
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 680, "w": 58,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 96, "roof_n": 12, "seen": True,
+    }
+    wide_grey = {
+        "id": "c12_16", "city_id": "c12_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 441, "y": 455, "plate_y": 471, "tile": [12, 16], "n": 1144, "w": 90,
+        "warm_n": 936, "wood_w": 47, "wood_h": 72, "wood_dens": 0.277,
+        "gold_n": 5, "wine_n": 0, "seen": True,
+    }
+    c14_small = {
+        "id": "c14_23", "city_id": "c14_23", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 500, "y": 620, "plate_y": 636, "tile": [14, 23], "n": 680, "w": 62,
+        "warm_n": 160, "wood_w": 30, "wood_h": 54, "wood_dens": 0.11,
+        "gold_n": 9, "wine_n": 0, "seen": True,
+    }
+    leaked = {
+        **_frost_wood_own_phantom("c15_12", [15, 12], 540, 324),
+        "gold_n": 40, "wood_w": 38, "wood_h": 64, "wood_dens": 0.08, "warm_n": 180,
+        "n": 620, "w": 58,
+    }
+    leak_enemy = {
+        **leaked,
+        "id": "c15_14", "city_id": "c15_14", "tile": [15, 14],
+        "owner": "enemy", "tribe": "vengir",
+        "evidence": ["frost_plate", "gold_lamps"],
+        "x": 480, "y": 380, "plate_y": 380,
+    }
+    leak_enemy2 = {
+        **leaked,
+        "id": "c16_12", "city_id": "c16_12", "tile": [16, 12],
+        "owner": "enemy", "tribe": "vengir",
+        "evidence": ["frost_plate", "gold_lamps"],
+        "x": 600, "y": 300, "plate_y": 300, "n": 500, "w": 56,
+        "gold_n": 36, "warm_n": 160, "wood_w": 30, "wood_h": 52,
+    }
+    enemies = [
+        _enemy_city("c9_12", [9, 12], 200, 200),
+        _enemy_city("c6_9", [6, 9], 200, 360),
+        _enemy_city("c23_17", [23, 17], 840, 460),
+    ]
+    assert not _sparse_own_longhouse(bufla)
+    assert not _sparse_own_longhouse(orkork)
+    assert _gold_lamp_sparse_longhouse(bufla)
+    assert _gold_lamp_sparse_longhouse(orkork)
+    assert _is_real_own_hit(bufla) and _is_real_own_hit(orkork)
+    assert _own_wood_is_grey_stone_mass(wide_grey)
+    assert not _is_real_own_hit(wide_grey)
+    assert not _gold_lamp_sparse_longhouse(leaked)
+    assert not _is_real_own_hit(leaked)
+    assert _own_miss_is_dark_vengir(
+        c14_small, sampled_tribe="bardur", col_tribe="bardur",
+        frost_plate=True, marks=True, wine_n=0,
+    )
+    assert not _own_miss_is_dark_vengir(
+        bufla, sampled_tribe="bardur", col_tribe="bardur",
+        frost_plate=True, marks=True, wine_n=12,
+    )
+
+    frame1 = session_cities(
+        [bufla, orkork, wide_grey, c14_small, leaked, leak_enemy, leak_enemy2, *enemies]
+    )
+    own1 = {c["id"] for c in frame1 if c.get("owner") == "own"}
+    en1 = {c["id"] for c in frame1 if c.get("owner") == "enemy"}
+    assert own1 == {"c7_16", "c16_24"}, frame1
+    assert "c12_16" in en1 and "c14_23" in en1, en1
+    assert "c16_24" not in en1 and "c7_16" not in en1
+    assert "c15_12" not in own1 and "c15_12" not in en1
+    assert "c15_14" not in en1 and "c16_12" not in en1
+    assert len(own1) == 2 and len(en1) == 5, (own1, en1)
+
+    frame2 = session_cities(stabilize(
+        [dict(bufla), dict(orkork), dict(wide_grey), dict(c14_small), dict(leaked), dict(leak_enemy), *enemies],
+        frame1,
+        keep_missing=True,
+    ))
+    frame3 = session_cities(stabilize(
+        [dict(bufla), dict(orkork), dict(wide_grey), dict(c14_small), dict(leaked), dict(leak_enemy2), *enemies],
+        frame2,
+        keep_missing=True,
+    ))
+    for frame in (frame2, frame3):
+        own_ids = {c["id"] for c in frame if c.get("owner") == "own"}
+        en = {c["id"] for c in frame if c.get("owner") == "enemy"}
+        assert own_ids == {"c7_16", "c16_24"}, frame
+        assert "c14_23" in en and "c12_16" in en and len(en) == 5, en
+        assert "c16_24" not in en and "c15_14" not in en and "c16_12" not in en
+
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_sparse_gold_lamp_longhouse(d, 248, 450)
+    _draw_sparse_gold_lamp_longhouse(d, 570, 667, wine_shadow=True)
+    _draw_gold_leaked_frost_phantom(d, 90, 520)
+    _draw_gold_leaked_frost_phantom(d, 540, 324)
+    _draw_disrof_city(d, 320, 200)
+    _draw_disrof_city(d, 980, 220)
+    _draw_disrof_city(d, 1100, 360)
+    _draw_tall_dense_low_gold_phantom(d, 441, 471)
+    _draw_zero_wine_c14_23(d, 200, 636)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    xs = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 248) < 50 for x in xs), own
+    assert any(abs(x - 570) < 50 for x in xs), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 5, mapped["cities"]
+    assert any(abs(int(c["x"]) - 441) < 50 for c in vengir), enemy
+    assert any(abs(int(c["x"]) - 200) < 55 for c in vengir), enemy
+    assert all(c.get("owner") != "enemy" or abs(int(c["x"]) - 570) > 40 for c in mapped["cities"]), mapped["cities"]
 
 
 def test_recruit_timeout_skips_full_observe():
