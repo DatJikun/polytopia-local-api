@@ -1570,6 +1570,82 @@ def test_dark_magenta_roof_classifies_vengir():
     assert classify_tribe((90, 85, 80)) == "bardur"
 
 
+def _own_city(i: int, y: int = 200) -> dict:
+    return {
+        "id": f"c{i}_0",
+        "city_id": f"c{i}_0",
+        "tribe": "bardur",
+        "owner": "own",
+        "x": 80 + (i % 6) * 180,
+        "y": y + (i // 6) * 160,
+        "tile": [i, 0],
+        "tile_xy": [80 + (i % 6) * 180, y + (i // 6) * 160],
+        "n": 200,
+        "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star"],
+        "w": 48,
+        "h": 20,
+        "plate_y": y + (i // 6) * 160,
+    }
+
+
+def _enemy_city(cid: str, tile: list[int], x: int, y: int, **extra) -> dict:
+    ev = extra.pop("evidence", ["magenta_roof", "gold_lamps", "frost_plate"])
+    return {
+        "id": cid,
+        "city_id": cid,
+        "tribe": "vengir",
+        "owner": "enemy",
+        "name": None,
+        "confidence": 0.78,
+        "evidence": ev,
+        "x": x,
+        "y": y,
+        "tile": tile,
+        "tile_xy": [x, y],
+        "n": extra.pop("n", 400),
+        "w": extra.pop("w", 90),
+        "h": extra.pop("h", 22),
+        **extra,
+    }
+
+
+def test_session_cities_keeps_sticky_enemy_when_own_is_full():
+    """Mid-fight miss of Disrof must not vanish behind 12 own cities."""
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    prev = [_own_city(i) for i in range(12)] + [_enemy_city("c13_10", [13, 10], 880, 310)]
+    nxt = [_own_city(i) for i in range(12)]
+    out = session_cities(stabilize(nxt, prev, keep_missing=True))
+    ids = {c["id"] for c in out}
+    assert "c13_10" in ids, out
+    hit = next(c for c in out if c["id"] == "c13_10")
+    assert hit["owner"] == "enemy" and hit["tribe"] == "vengir"
+    assert hit.get("seen") is False
+    assert hit.get("tile") == [13, 10]
+
+
+def test_nearby_vengir_cities_do_not_merge():
+    """Disrof + Rzgórst within the old 80px vengir merge must stay two cities."""
+    from polytopia_api.entities import session_cities
+
+    a = _enemy_city("c20_5", [20, 5], 900, 300, w=40, plate_y=300)
+    b = _enemy_city(
+        "c21_6",
+        [21, 6],
+        970,
+        320,
+        w=40,
+        plate_y=320,
+        evidence=["magenta_roof", "frost_plate"],
+    )
+    out = session_cities([a, b])
+    ids = {c["id"] for c in out if c.get("owner") == "enemy"}
+    assert ids >= {"c20_5", "c21_6"}, out
+
+
+
 def test_unit_id_stays_resolvable_after_observe_drops_it():
     """Live: after /attack timeout, next call was 'no entity u2'."""
     from unittest.mock import patch
@@ -3551,6 +3627,8 @@ if __name__ == "__main__":
     test_twelve_own_cities_do_not_wipe_enemy()
     test_t44_dark_tile_vengir_stay_cities_enemy()
     test_dark_magenta_roof_classifies_vengir()
+    test_session_cities_keeps_sticky_enemy_when_own_is_full()
+    test_nearby_vengir_cities_do_not_merge()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
     test_move_to_never_returns_ok_null()

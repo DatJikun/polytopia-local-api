@@ -887,7 +887,9 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         return 0
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
-        return max(dist, 80)
+        # Same nameplate still merges via tile / plate overlap above.
+        # Do not collapse Disrof + Rzgórst at 80px on a zoomed late-game map.
+        return 0
     return dist
 
 
@@ -980,25 +982,26 @@ def session_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _finalize_cities(kept)
 
 
-# Live T44: cities_own filled the old combined [:12] and cities_enemy went [].
-MAX_CITIES_OWN = 16
-MAX_CITIES_ENEMY = 12
+# Live T44/T45: cities_own filled the old combined [:12] and cities_enemy went [].
+# Never slice enemy to make room for Bardur.
+MAX_CITIES_OWN = 24
 
 
 def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Cap own and enemy separately so a full Bardur list cannot drop Disrof."""
+    """Keep every real enemy city. A 12-own map must not empty cities_enemy."""
     cities = _cap_vengir(_dedupe_cities(cities))
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     other = [c for c in cities if c.get("owner") not in {"own", "enemy"}]
-    return enemy[:MAX_CITIES_ENEMY] + own[:MAX_CITIES_OWN] + other
+    return enemy + own[:MAX_CITIES_OWN] + other
 
 
 def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[dict[str, Any]]:
     """Keep every Disrof-class hit; only unnamed frost fragments are capped.
 
     OCR names are off (ghost Arch). Three visible Vengir cities must not collapse
-    to two because they are unnamed.
+    to two because they are unnamed. Real enemies are listed first so a later
+    own-city cap cannot drop them.
     """
     named: list[dict[str, Any]] = []
     real: list[dict[str, Any]] = []
@@ -1026,7 +1029,7 @@ def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[di
 
     real.sort(key=_score, reverse=True)
     frost_fp.sort(key=_score, reverse=True)
-    return others + named + real + frost_fp[:unnamed_limit]
+    return named + real + frost_fp[:unnamed_limit] + others
 
 
 def _dedupe_cities(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
