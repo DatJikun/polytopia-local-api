@@ -98,8 +98,11 @@ def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tup
     bardur_n = votes.get("bardur", 0)
     total = sum(votes.values())
     mean_lum = float(patch.astype(np.int32).mean())
-    # Purple roof is decisive (Disrof magenta).
+    # Purple roof is decisive (Disrof magenta). A handful of wine pixels on
+    # Bardur wood must not steal cities_own (live: own dropped to 2 vs many).
     if vengir_n >= 3 or (total and vengir_n >= 0.08 * total):
+        if bardur_n > vengir_n * 3 and bardur_n >= 0.45 * total and vengir_n < 12:
+            return "bardur", rgb
         return "vengir", rgb
     if oumaji_n and vengir_n:
         return "vengir", rgb
@@ -598,7 +601,10 @@ def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[
     if not votes:
         return classify_tribe(rgb), rgb
     vengir_n = votes.get("vengir", 0)
+    bardur_n = votes.get("bardur", 0)
     total = sum(votes.values())
+    if bardur_n and bardur_n >= vengir_n * 3 and (not total or bardur_n >= 0.40 * total) and vengir_n < 12:
+        return "bardur", rgb
     if vengir_n >= 8 or (total and vengir_n >= 0.08 * total):
         return "vengir", rgb
     return max(votes, key=votes.get), rgb
@@ -679,6 +685,12 @@ def _plate_gold_split(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> tu
         return gold_n, 0
     if len(runs) == 1 and (runs[0][1] - runs[0][0]) >= star_w + 10:
         return gold_n, 0
+    # Star lives on the right. Gold only on the left of a split frost
+    # fragment is Disrof windows (live 0bfb6f7), not Ufla's star.
+    if len(runs) == 1:
+        run_mid = (runs[0][0] + runs[0][1]) / 2.0
+        if run_mid < crop.shape[1] * 0.45:
+            return gold_n, 0
     return 0, gold_n
 
 
@@ -772,22 +784,37 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             rgb = col_rgb
             if not strong_vengir and col_tribe != "vengir":
                 continue
-        if strong_vengir or (
-            frost_plate and (roof_n >= 4 or gold_n >= 8 or plate_win_n >= 8)
-        ):
+        bardurish = (
+            sampled_tribe == "bardur"
+            or col_tribe == "bardur"
+            or classify_tribe(rgb) == "bardur"
+            or (marks and frost_plate and sampled_tribe != "vengir")
+        )
+        # Magenta roof is enough. Gold lamps / plate windows only count on frost
+        # (Oumaji sand matches gold pixel-for-pixel and is not Disrof).
+        real_disrof = roof_n >= 8 or (
+            frost_plate and (gold_n >= 8 or plate_win_n >= 8)
+        )
+        if real_disrof or (strong_vengir and not bardurish):
             tribe = "vengir"
+        elif strong_vengir and bardurish:
+            tribe = "bardur"
         elif tribe == "vengir":
             # Purple noise without a magenta roof / lamps: grey Bardur wood stays own.
             lum = (int(rgb[0]) + int(rgb[1]) + int(rgb[2])) / 3.0
             chroma = max(int(rgb[0]), int(rgb[1]), int(rgb[2])) - min(
                 int(rgb[0]), int(rgb[1]), int(rgb[2])
             )
-            if classify_tribe(rgb) == "bardur" or (40 <= lum <= 145 and chroma <= 40):
+            if classify_tribe(rgb) == "bardur" or col_tribe == "bardur" or (
+                40 <= lum <= 145 and chroma <= 40
+            ):
                 tribe = "bardur"
+            elif marks and frost_plate:
+                tribe = _own_tribe()
             else:
                 continue
         elif tribe == "oumaji" and frost_plate:
-            if classify_tribe(rgb) == "bardur":
+            if classify_tribe(rgb) == "bardur" or col_tribe == "bardur":
                 tribe = "bardur"
             else:
                 continue
@@ -881,9 +908,8 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         return 10**6
     oa, ob = a.get("owner"), b.get("owner")
     if oa and ob and oa != ob:
-        # Absorb the grey-stone half of Disrof; do not eat distant Bardur.
-        if _is_disrof_hit(a) or _is_disrof_hit(b):
-            return max(dist, 64)
+        # Same hex / overlapping nameplate already merged above (grey-stone
+        # half of Disrof). A 64px radius ate nearby Bardur (live: cities_own=2).
         return 0
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
@@ -906,6 +932,18 @@ def _plates_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
     # Gold star punches a hole in the frost, so one nameplate can split into
     # two clusters ~100px apart. Merge those; distinct cities are farther.
     gap = abs(ax - bx) - (aw + bw) / 2
+    oa, ob = a.get("owner"), b.get("owner")
+    ta, tb = a.get("tile"), b.get("tile")
+    tiles_differ = False
+    if isinstance(ta, (list, tuple)) and isinstance(tb, (list, tuple)) and len(ta) >= 2 and len(tb) >= 2:
+        try:
+            tiles_differ = (int(ta[0]), int(ta[1])) != (int(tb[0]), int(tb[1]))
+        except (TypeError, ValueError):
+            tiles_differ = False
+    if oa and ob and oa != ob and tiles_differ:
+        # Neighbor Bardur 1 hex from Disrof (live: cities_own collapsed to 2).
+        # Split halves of ONE banner share a tile and merge above.
+        return False
     return gap <= 64
 
 

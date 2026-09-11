@@ -197,6 +197,19 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
     elif src_tribe == "vengir" and dst_tribe == "oumaji":
         d["tribe"] = "vengir"
         d["owner"] = "own" if str(src.get("owner") or "") == "own" else "enemy"
+    elif str(src.get("owner") or "") == "own":
+        # Live T46: after /recruit click, c7_16 flipped cities_own → cities_enemy.
+        # A magenta speck / selection highlight must not steal Bardur mid-turn.
+        d["owner"] = "own"
+        if src_tribe:
+            d["tribe"] = src_tribe
+        ev = list(src.get("evidence") or [])
+        if ev:
+            cur = list(d.get("evidence") or [])
+            for item in ev:
+                if item not in cur:
+                    cur.append(item)
+            d["evidence"] = cur
     cid = str(d.get("id") or src.get("id") or "")
     if cid:
         d["id"] = cid
@@ -264,6 +277,18 @@ def stabilize(
             if dist < best_d * best_d:
                 best_d = int(dist ** 0.5)
                 best = p
+        if best and best.get("id"):
+            # Same hex already matched above. A neighbor at <56px with a
+            # different owner is a different city — do not steal Bardur ids.
+            same_tile = tile is not None and _tile_key(best) == tile
+            if not same_tile:
+                own_a, own_b = str(d.get("owner") or ""), str(best.get("owner") or "")
+                tribe_a, tribe_b = str(d.get("tribe") or ""), str(best.get("tribe") or "")
+                if (own_a and own_b and own_a != own_b) or {tribe_a, tribe_b} == {
+                    "bardur",
+                    "vengir",
+                }:
+                    best = None
         if best and best.get("id"):
             prev_id = str(best["id"])
             new_id = str(d.get("id") or "")

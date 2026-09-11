@@ -13,6 +13,7 @@ from . import snapshot
 from .observe import all_cities, lookup, lookup_city, lookup_unit, observe, register_cities, remember
 
 ATTACK_BUDGET_S = 7.5
+RECRUIT_BUDGET_S = 7.5
 SELECT_LIGHT_SLEEP_S = 0.18
 
 
@@ -202,6 +203,44 @@ def _city_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
     if all(abs(below - p[1]) >= 6 for p in points):
         points.append((x, below, "plate_below"))
     return points
+
+
+def _recruit_click_points(hit: dict[str, Any], frame: tuple[int, int]) -> list[tuple[int, int, str]]:
+    """Nameplate first, then the roof/tile that actually opens TRAIN.
+
+    Live T46: plate/building/plate_below ran and TRAIN still stayed hidden.
+    Capture avoids the roof on purpose (that click is the city panel).
+    """
+    points = list(_city_click_points(hit))
+    seen = {(int(x), int(y)) for x, y, _ in points}
+
+    def _add(x: int, y: int, where: str) -> None:
+        key = (int(x), int(y))
+        if any(abs(key[0] - px) < 6 and abs(key[1] - py) < 6 for px, py in seen):
+            return
+        points.append((key[0], key[1], where))
+        seen.add(key)
+
+    tile = combat.city_tile_center(hit, frame)
+    if tile:
+        _add(tile[0], tile[1], "tile")
+    foot = combat.city_walk_center(hit, frame)
+    if foot:
+        _add(foot[0], foot[1], "city_foot")
+    return points
+
+
+def _panel_train_blobs(obs: dict[str, Any] | None) -> list[dict[str, Any]]:
+    overlay = (obs or {}).get("overlay") or {}
+    frame = _frame(obs)
+    out: list[dict[str, Any]] = []
+    for b in overlay.get("train_blobs") or []:
+        try:
+            if _in_unit_panel(int(b["x"]), int(b["y"]), frame):
+                out.append(b)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 def _panel_capture(obs: dict[str, Any] | None) -> bool:
@@ -1964,14 +2003,25 @@ def attack(
 
 
 def recruit_target(obs: dict[str, Any]) -> tuple[int, int] | None:
-    """Prefer a live TRAIN blob. Never click scaled TRAIN just because OCR said 'Train'."""
+    """Prefer a UNIT_CROP TRAIN pill. Never click scaled TRAIN (map at 1280)."""
+    panel = _panel_train_blobs(obs)
+    if panel:
+        best = max(panel, key=lambda b: int(b.get("n") or 0))
+        return int(best["x"]), int(best["y"])
     overlay = obs.get("overlay") or {}
     blobs = overlay.get("train_blobs") or []
     if blobs:
         best = max(blobs, key=lambda b: int(b.get("n") or 0))
         return int(best["x"]), int(best["y"])
-    if overlay.get("train_pixel"):
-        return tuple(coords.TRAIN)
+    unit = obs.get("unit") or {}
+    ready = obs.get("ready") or {}
+    if unit.get("train") or ready.get("train"):
+        # OCR saw TRAIN but the pill wasn't clustered — click the panel, not the map.
+        try:
+            x0, y0, x1, y1 = coords.crop_box("UNIT_CROP")
+        except Exception:
+            return None
+        return int(x0 + (x1 - x0) * 0.30), int(y0 + (y1 - y0) * 0.42)
     return None
 
 
@@ -1983,7 +2033,16 @@ def recruit(
     unit: str | None = None,
     space: str = "screen",
 ) -> dict[str, Any]:
-    """Select city_id (nameplate first) and click a detected TRAIN blob."""
+    """Select city_id (nameplate first) and click a detected TRAIN blob.
+
+    Live: full HUD observe after every plate click blew the HTTP budget.
+    Marks-mode overlay still sees TRAIN pills; stop under ~8s like /attack.
+    """
+    t0 = time.time()
+
+    def _elapsed() -> float:
+        return round(time.time() - t0, 3)
+
     ident = city_id or id
     hit = _resolve(ident, space) if ident else None
     if ident and not hit:
@@ -1993,12 +2052,29 @@ def recruit(
     last_obs = remember()
     points: list[tuple[int, int, str]] = []
     if hit:
-        points = _city_click_points(hit)
+        points = _recruit_click_points(hit, _frame(last_obs))
     elif x is not None and y is not None:
         points = [(int(x), int(y), "xy")]
     target: tuple[int, int] | None = None
+
+    def _timeout(reason: str = "timeout", **extra: Any) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "name": "recruit",
+            "reason": reason,
+            "hint": "budget <8s — marks observe for TRAIN, not looping HUD OCR",
+            "city_id": ident,
+            "hit": hit,
+            "tried": tried,
+            "opened": opened,
+            "elapsed_s": _elapsed(),
+            **extra,
+        }
+
     if not points:
-        last_obs = last_obs or observe()
+        if _elapsed() >= RECRUIT_BUDGET_S:
+            return _timeout()
+        last_obs = last_obs or observe(mode="marks")
         target = recruit_target(last_obs)
         if target is None:
             return {
@@ -2006,6 +2082,7 @@ def recruit(
                 "name": "recruit",
                 "reason": "need city_id (or x,y) — TRAIN not already visible",
                 "city_id": ident,
+                "elapsed_s": _elapsed(),
                 "unit_panel": last_obs.get("unit"),
                 "ready": last_obs.get("ready"),
                 "overlay": {
@@ -2015,13 +2092,17 @@ def recruit(
                 },
             }
     for cx, cy, where in points:
+        if _elapsed() >= RECRUIT_BUDGET_S:
+            return _timeout()
         opened = {
             **_click(cx, cy, space="screen"),
             "where": where,
             "city_id": ident,
         }
-        _sleep(0.7)
-        last_obs = observe()
+        _sleep(0.35)
+        if _elapsed() >= RECRUIT_BUDGET_S:
+            return _timeout()
+        last_obs = observe(mode="marks")
         target = recruit_target(last_obs)
         tried.append({"where": where, "x": cx, "y": cy, "train": target is not None})
         if target is not None:
@@ -2035,6 +2116,7 @@ def recruit(
             "hit": hit,
             "tried": tried,
             "opened": opened,
+            "elapsed_s": _elapsed(),
             "unit_panel": (last_obs or {}).get("unit"),
             "ready": (last_obs or {}).get("ready"),
             "overlay": {
@@ -2044,8 +2126,10 @@ def recruit(
             },
         }
     clicked = _click(target[0], target[1], space="screen")
-    _sleep(0.5)
-    after = observe()
+    _sleep(0.35)
+    after = last_obs or remember() or {}
+    if _elapsed() < RECRUIT_BUDGET_S - 0.8:
+        after = observe(mode="marks")
     return {
         "ok": True,
         "name": "recruit",
@@ -2054,6 +2138,7 @@ def recruit(
         "y": clicked["y"],
         "want_unit": unit,
         "tried": tried,
+        "elapsed_s": _elapsed(),
         "hint": "radial portraits are on the map; click one after TRAIN",
         "opened": opened,
         "hud": after.get("hud"),
