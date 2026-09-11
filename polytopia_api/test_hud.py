@@ -2514,7 +2514,13 @@ def test_own_longhouses_sticky_across_missed_frame():
     assert own_ids == {"c7_16", "c16_24"}, out
     missed = next(c for c in out if c["id"] == "c16_24")
     assert missed.get("seen") is False
+    assert int(missed.get("missed") or 0) == 1
     assert len(enemy_ids) == 5, enemy_ids
+    # Second consecutive miss drops Orkork — do not sticky-grow, and do not
+    # keep a real city forever when it left the screen.
+    twice = session_cities(stabilize(nxt, out, keep_missing=True))
+    twice_own = {c["id"] for c in twice if c.get("owner") == "own"}
+    assert twice_own == {"c7_16"}, twice
     # Consecutive frames keep 2/5 — ghosts still do not grow own.
     ghost = {
         "id": "c15_15", "city_id": "c15_15", "tribe": "bardur", "owner": "own",
@@ -2652,6 +2658,158 @@ def test_own_phantoms_do_not_accumulate_across_frames():
     ids = {c["id"] for c in own}
     assert ids == {"c7_16", "c12_16"}, own
     assert "c15_15" not in ids and "c15_8" not in ids and "c21_23" not in ids
+
+
+def _frost_wood_own_phantom(cid: str, tile: list[int], x: int, y: int) -> dict:
+    """Live T46 after #41: gold-star frost/wood FP that used to pass _is_real_own_hit."""
+    return {
+        "id": cid, "city_id": cid, "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": x, "y": y, "plate_y": y, "tile": tile, "n": 480, "w": 56,
+        "warm_n": 180, "wood_w": 22, "wood_h": 44, "wood_dens": 0.12,
+        "gold_n": 9, "seen": True,
+    }
+
+
+def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
+    """Live T46 after #41: cities_own flickers 2→3 (c15_15 / c15_12) then 4–5.
+
+    Game Stats Bardur 2 (Bufla c7_16, Orkork c17_12) / Vengir 5. Frost/wood
+    plates with a gold star but no roof lamps must not count, sticky-grow,
+    or merge into a 1-hex neighbor. No warm_n>=500 floor.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import _is_real_own_hit, observe_map, session_cities
+    from polytopia_api.observe import stabilize
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 432, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 116, "seen": True,
+    }
+    orkork = {
+        "id": "c17_12", "city_id": "c17_12", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 612, "y": 324, "plate_y": 324, "tile": [17, 12], "n": 1100, "w": 88,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 68, "seen": True,
+    }
+    c15_15 = _frost_wood_own_phantom("c15_15", [15, 15], 540, 405)
+    c15_12 = {
+        **_frost_wood_own_phantom("c15_12", [15, 12], 540, 324),
+        "w": 52, "n": 620, "plate_y": 324,
+    }
+    c16_24 = _frost_wood_own_phantom("c16_24", [16, 24], 576, 648)
+    enemies = [
+        _enemy_city("c9_12", [9, 12], 320, 280),
+        _enemy_city("c6_9", [6, 9], 200, 200),
+        _enemy_city("c14_23", [14, 23], 500, 620),
+        _enemy_city("c23_17", [23, 17], 840, 460),
+        _enemy_city("c12_16", [12, 16], 441, 455, evidence=["frost_plate", "grey_stone"]),
+    ]
+    assert _is_real_own_hit(bufla) and _is_real_own_hit(orkork)
+    assert bufla["warm_n"] < 500 and orkork["warm_n"] < 500
+    assert not _is_real_own_hit(c15_15)
+    assert not _is_real_own_hit(c15_12)
+    assert not _is_real_own_hit(c16_24)
+
+    frame1 = session_cities([bufla, orkork, *enemies])
+    assert {c["id"] for c in frame1 if c.get("owner") == "own"} == {"c7_16", "c17_12"}
+    assert len([c for c in frame1 if c.get("owner") == "enemy"]) == 5
+
+    # Flicker frame: phantoms appear. Must stay 2/5.
+    frame2 = session_cities(stabilize(
+        [dict(bufla), dict(orkork), c15_15, c15_12, *enemies],
+        frame1,
+        keep_missing=True,
+    ))
+    own2 = {c["id"] for c in frame2 if c.get("owner") == "own"}
+    en2 = {c["id"] for c in frame2 if c.get("owner") == "enemy"}
+    assert own2 == {"c7_16", "c17_12"}, frame2
+    assert "c15_15" not in own2 and "c15_12" not in own2
+    assert len(en2) == 5, en2
+
+    # After /move-to + /recruit: more ghosts. Must not sticky-pile to 4–5.
+    frame3 = session_cities(stabilize(
+        [dict(bufla), dict(orkork), c16_24, c15_12, *enemies],
+        frame2,
+        keep_missing=True,
+    ))
+    own3 = {c["id"] for c in frame3 if c.get("owner") == "own"}
+    assert own3 == {"c7_16", "c17_12"}, frame3
+    assert "c16_24" not in own3 and "c15_15" not in own3
+
+    # Gold-star fragment ~72px from Orkork would be a 3rd own city unless merged.
+    fragment = dict(
+        c15_12,
+        warm_n=200, wood_w=36, wood_h=50, wood_dens=0.09, gold_n=70,
+        w=50, n=400,
+    )
+    assert _is_real_own_hit(fragment)
+    split = session_cities([orkork, fragment])
+    split_own = [c for c in split if c.get("owner") == "own"]
+    assert len(split_own) == 1, split
+    assert split_own[0]["id"] == "c17_12"
+
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 248, 450)
+    _draw_bardur_city(d, 612, 324)
+    # Mid-map unit frost, not overlapping either longhouse.
+    _draw_unit_frost_phantom(d, 100, 500)
+    _draw_unit_frost_phantom(d, 100, 360)
+    _draw_unit_frost_phantom(d, 440, 560)
+    _draw_disrof_city(d, 320, 200)
+    _draw_disrof_city(d, 980, 220)
+    _draw_disrof_city(d, 1100, 360)
+    _draw_disrof_city(d, 900, 520)
+    _draw_disrof_city(d, 1160, 640)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 5, mapped["cities"]
+    xs = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 248) < 40 for x in xs), own
+    assert any(abs(x - 612) < 40 for x in xs), own
+
+
+def test_own_phantoms_single_miss_does_not_pile_up():
+    """A frost/wood FP that slipped into prev must not survive a second observe."""
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    real_a = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 432, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 116, "seen": True,
+    }
+    real_b = {
+        "id": "c17_12", "city_id": "c17_12", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 612, "y": 324, "plate_y": 324, "tile": [17, 12], "n": 1100, "w": 88,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 68, "seen": True,
+    }
+    ghost = _frost_wood_own_phantom("c15_15", [15, 15], 540, 405)
+    prev = [real_a, real_b, ghost]
+    nxt = [dict(real_a), dict(real_b)]
+    out = session_cities(stabilize(nxt, prev, keep_missing=True))
+    ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert ids == {"c7_16", "c17_12"}, out
 
 
 def test_recruit_timeout_skips_full_observe():
@@ -5364,6 +5522,8 @@ if __name__ == "__main__":
     test_dark_vengir_frost_star_counts_as_enemy()
     test_own_longhouses_sticky_across_missed_frame()
     test_own_phantoms_do_not_accumulate_across_frames()
+    test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2()
+    test_own_phantoms_single_miss_does_not_pile_up()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
     test_recruit_clicks_roof_then_train()

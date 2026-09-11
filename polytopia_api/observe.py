@@ -226,6 +226,16 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
         d["city_id"] = cid
 
 
+def _carry_missing_city(p: dict[str, Any]) -> dict[str, Any]:
+    """One unseen copy. Own cities count misses so a second gap drops ghosts."""
+    d = dict(p)
+    d["stable"] = True
+    d["seen"] = False
+    d["sticky"] = True
+    d["missed"] = int(p.get("missed") or 0) + 1
+    return d
+
+
 def stabilize(
     items: list[dict[str, Any]],
     prev: list[dict[str, Any]] | None,
@@ -243,11 +253,7 @@ def stabilize(
             for p in prev:
                 if not p.get("id"):
                     continue
-                d = dict(p)
-                d["stable"] = True
-                d["seen"] = False
-                d["sticky"] = True
-                out.append(d)
+                out.append(_carry_missing_city(p))
             return out
         return []
     used: set[str] = set()
@@ -255,6 +261,7 @@ def stabilize(
     for it in items:
         d = dict(it)
         d["seen"] = True
+        d.pop("missed", None)
         tile = _tile_key(d)
         tile_hit = None
         if tile is not None:
@@ -343,10 +350,7 @@ def stabilize(
             pid = str(p.get("id") or "")
             if not pid or pid in used:
                 continue
-            d = dict(p)
-            d["stable"] = True
-            d["seen"] = False
-            d["sticky"] = True
+            d = _carry_missing_city(p)
             used.add(pid)
             out.append(d)
     return out

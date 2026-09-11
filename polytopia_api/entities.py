@@ -1070,6 +1070,10 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
     if oa == "own" and ob == "own" and _city_sep2(a, b) > OWN_SPLIT_MAX_PX * OWN_SPLIT_MAX_PX:
         # Live T46 after #32: Bufla+Orkork ~80px became one city then 0.
         # Same-tile splits still merge above; 1-hex neighbors never do.
+        # Gold-star hole can hash gx±2 (~72px, live c15_12 vs Orkork c17_12)
+        # — merge only when one hit is a fragment, not two full longhouses.
+        if _own_plate_is_split_fragment(a, b) and _city_sep2(a, b) < 80 * 80:
+            return 79
         return 0
     if _plates_overlap(a, b):
         return 10**6
@@ -1271,6 +1275,26 @@ def _own_wood_is_grey_stone_mass(c: dict[str, Any]) -> bool:
     return gold_n < 16 and 0.16 <= dens < 0.34 and wh >= 50
 
 
+def _own_plate_is_split_fragment(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Gold-star hole of one Bardur plate, not two 1-hex neighbor longhouses.
+
+    Live T46: Orkork c17_12 + phantom c15_12 ~72px, same plate_y, one wide
+    plate and one fragment. Neighbor cities both have full plates (~80px).
+    """
+    try:
+        ay = int(a.get("plate_y") if a.get("plate_y") is not None else a["y"])
+        by = int(b.get("plate_y") if b.get("plate_y") is not None else b["y"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if abs(ay - by) > 16:
+        return False
+    wa, wb = int(a.get("w") or 0), int(b.get("w") or 0)
+    na, nb = int(a.get("n") or 0), int(b.get("n") or 0)
+    wide = max(wa, wb) >= 70 and 0 < min(wa, wb) <= 62
+    heavy = max(na, nb) >= 900 and 0 < min(na, nb) <= 750
+    return wide or heavy
+
+
 def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     """Drop unit-on-snow / mountain specks; keep live longhouses with sparse wood.
 
@@ -1279,7 +1303,10 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     tall-empty frost (live T46 c17_14: wh=48 dens=0.021 warm=67). Keep Bufla/
     Orkork (wh≈69–72 dens≈0.08–0.09 warm≈260, gold_n 68–116). Never restore
     warm_n>=500. Tall-dense-low-gold (c12_16 dens≈0.28 gold_n≈5) is grey stone.
-    Dict fixtures omit wood_* — treat those as already-vetted cities.
+    Frost/wood FPs (live c15_15 / c15_12 / post-action c16_24) have a gold
+    star or fruit on the plate but almost no building lamps, and are not
+    dense synthetic longhouses (dens≳0.34, gold_n=0). Dict fixtures omit
+    wood_* — treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
         return True
@@ -1297,6 +1324,18 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
         return False
     if _own_wood_is_grey_stone_mass(c):
         return False
+    if c.get("gold_n") is not None:
+        gold = int(c.get("gold_n") or 0)
+        ww = int(c.get("wood_w") or 0)
+        # Sparse live longhouse keeps via roof lamps. Compact / synthetic
+        # longhouses keep via dens≳0.34 even when gold_n=0.
+        if gold < 24 and dens < 0.34:
+            return False
+        # Narrow unit column (even a dense leather blob) is not a longhouse.
+        if ww < 28 and gold < 24:
+            return False
+        if ww < 28 and dens < 0.34 and gold < 48:
+            return False
     return True
 
 
@@ -1305,8 +1344,9 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
 
     Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). #32's warm_n>=500
     floor left cities_own 1→0. Close-plate merge is capped at 48px so ~80px
-    neighbors stay two. Short/sparse, tall-empty, *and* tall-dense-low-gold
-    wood (c12_16 dens≈0.28 gold_n≈5 / c17_14) still drop from own.
+    neighbors stay two. Short/sparse, tall-empty, tall-dense-low-gold
+    (c12_16 dens≈0.28 gold_n≈5 / c17_14), *and* frost/wood plates with a
+    gold star but no building lamps (c15_15 / c15_12) still drop from own.
     """
     if c.get("owner") != "own":
         return False
@@ -1336,11 +1376,14 @@ def _keep_sticky_city(c: dict[str, Any]) -> bool:
     """Unnamed frost FPs must not accumulate across observes (2→4→7).
 
     Own ghosts stuck the same way (T46: 5–7 vs 2 Bardur on screen) — those
-    still drop. A real longhouse (Bufla / Orkork) must survive a missed
-    frame so cities_own does not flicker 2→1.
+    still drop. A real longhouse (Bufla / Orkork) may survive a *single*
+    missed frame so cities_own does not flicker 2→1. A second miss drops
+    it — frost/wood FPs that passed once must not sticky-grow 2→4–5.
     """
     if c.get("owner") == "own":
-        return _is_real_own_hit(c)
+        if not _is_real_own_hit(c):
+            return False
+        return int(c.get("missed") or 0) <= 1
     if c.get("name"):
         return True
     if _is_disrof_hit(c):
