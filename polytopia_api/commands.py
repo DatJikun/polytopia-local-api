@@ -137,7 +137,19 @@ def _on_city_mark(
     dest: dict[str, Any],
     frame: tuple[int, int],
 ) -> tuple[dict[str, Any] | None, float | None]:
-    """Blue mark on the city hex only — never an adjacent tile (~1.0 hex)."""
+    """Blue mark on the city hex only — never an adjacent tile (~1.0 hex).
+
+    Prefer the walkable ground (building foot). Scoring every stand point and
+    taking the nearest let the roof cluster (~tile_xy) beat the live Disrof
+    ring (~0.9 below the roof).
+    """
+    walk = combat.city_walk_center(dest, frame)
+    if walk:
+        mark, d = combat.nearest_mark_hex(
+            marks, walk[0], walk[1], frame, combat.ON_CITY_MARK_HEX
+        )
+        if mark is not None:
+            return mark, d
     best = None
     best_d = combat.ON_CITY_MARK_HEX
     for px, py in combat.city_stand_points(dest, frame):
@@ -146,6 +158,69 @@ def _on_city_mark(
             best = mark
             best_d = d
     return best, (None if best is None else round(best_d, 3))
+
+
+def _find_walk_mark(
+    marks: list[dict[str, Any]],
+    dest: dict[str, Any],
+    frame: tuple[int, int],
+    arr=None,
+) -> tuple[dict[str, Any] | None, float | None]:
+    """Prefer a clustered blue, then leftover ring pixels on the city hex."""
+    mark, hex_d = _on_city_mark(marks, dest, frame)
+    if mark is not None:
+        return mark, hex_d
+    if arr is None:
+        return None, None
+    pitch = combat.hex_pitch(*frame)
+    points: list[tuple[int, int]] = []
+    walk = combat.city_walk_center(dest, frame)
+    if walk:
+        points.append(walk)
+    for px, py in combat.city_stand_points(dest, frame):
+        if (px, py) not in points:
+            points.append((px, py))
+    for px, py in points:
+        hit = detect.move_on_hex(arr, px, py, pitch)
+        if hit.get("ok"):
+            return hit, 0.0
+    for px, py in points:
+        tint = detect.move_tint_at(arr, px, py, radius=max(14, pitch // 2))
+        if tint.get("ok"):
+            return tint, 0.0
+    return None, None
+
+
+def _unit_xy(obs: dict[str, Any] | None, ident: str | None) -> tuple[int, int] | None:
+    if not ident:
+        return None
+    hit = lookup(obs, ident) if obs else None
+    if not hit:
+        hit = _resolve(ident)
+    if not hit:
+        return None
+    try:
+        return int(hit["x"]), int(hit["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _city_click_misfire(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    from_id: str | None,
+) -> bool:
+    """True when the click selected the city instead of walking the unit."""
+    if _panel_capture(after):
+        return False
+    panel = after.get("unit") or {}
+    if panel.get("train") and not panel.get("capture"):
+        return True
+    xy0 = _unit_xy(before, from_id)
+    xy1 = _unit_xy(after, from_id)
+    if xy0 and xy1 and xy0 == xy1:
+        return True
+    return False
 
 
 def _stood_on_city(
@@ -357,25 +432,14 @@ def _move_to(
         )
         # Adjacent blue hexes (~1.0) used to win nearest_mark_hex(1.15) and
         # walk NEXT TO Disrof while still returning ok:true.
-        mark, hex_d = _on_city_mark(marks, dest, frame)
-        if mark is None:
-            arr = _shot_arr(after_select)
-            if arr is not None:
-                for px, py in combat.city_stand_points(dest, frame):
-                    tint = detect.move_tint_at(arr, px, py)
-                    if tint.get("ok"):
-                        mark, hex_d = tint, 0.0
-                        x, y = px, py
-                        break
+        arr = _shot_arr(after_select)
+        mark, hex_d = _find_walk_mark(marks, dest, frame, arr)
         garrison = combat.garrison_unit(after_select.get("units") or [], dest, frame, max_hex=0.9)
         enemy_on = bool(garrison and str(garrison.get("owner") or "") == "enemy")
         atk_marks = list(after_select.get("attack_marks") or [])
         red_on, _ = combat.nearest_mark_hex(atk_marks, x, y, frame, 0.85)
         if red_on is not None:
             enemy_on = True
-        if mark is None and reach.get("ok") and not enemy_on and panel.get("can_move") is not False:
-            mark = {"x": x, "y": y, "n": 0, "kind": "city_tile"}
-            hex_d = 0.0
         step, _ = combat.nearest_mark_toward(
             marks,
             (fx, fy) if fx is not None else None,
@@ -387,18 +451,22 @@ def _move_to(
         if mark is None:
             path_reason = "no_mark_on_city_tile"
             hint = "no blue mark on the city tile — unit cannot stand ON this turn"
+            reason = "no_mark_on_city_tile"
             if enemy_on:
                 path_reason = "city_occupied"
+                reason = "city_occupied"
                 hint = "attack the garrison first (hp_dropped) then move-to"
             elif not reach.get("ok"):
-                path_reason = "out_of_move_range"
+                path_reason = "out_of_range"
+                reason = "out_of_range"
                 hint = "city is beyond this unit's walk this turn — step toward suggested_tile_xy"
             elif not marks:
                 path_reason = "no_move_marks"
+                reason = "no_move_marks"
                 hint = "select did not light blue hexes — unit may have no moves"
             return _fail(
                 "move_to",
-                "no_mark_on_city_tile",
+                reason,
                 hint=hint,
                 path_reason=path_reason,
                 city_id=city_id,
@@ -415,18 +483,45 @@ def _move_to(
                 stood_on_city=False,
             )
         clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
-        _sleep(0.5)
+        _sleep(0.55)
         after = observe(mode="marks")
         on = _stood_on_city(after, dest, frame, allow_panel=True)
-        # Clicking the frost plate selects the city (TRAIN) instead of walking.
-        if not on.get("ok") and (after.get("unit") or {}).get("train") and not _panel_capture(after):
-            for px, py in combat.city_stand_points(dest, frame)[1:]:
-                clicked = _click(px, py, space="screen")
-                _sleep(0.45)
+        # Building / plate clicks select the city (TRAIN) and never walk.
+        # Re-select the unit and click the blue ring (often at the building foot).
+        if not on.get("ok") and _city_click_misfire(after_select, after, from_id):
+            if from_id or from_x is not None:
+                selected = select_unit(
+                    x=from_x, y=from_y, id=from_id, space=space, light=True,
+                )
+                retry_obs = remember() or after
+            else:
+                retry_obs = after
+            retry_frame = _frame(retry_obs)
+            retry_marks = list(retry_obs.get("move_marks") or [])
+            retry_arr = _shot_arr(retry_obs)
+            mark2, hex_d2 = _find_walk_mark(retry_marks, dest, retry_frame, retry_arr)
+            aims: list[tuple[int, int]] = []
+            if mark2 is not None:
+                aims.append((int(mark2["x"]), int(mark2["y"])))
+            walk = combat.city_walk_center(dest, retry_frame)
+            if walk and walk not in aims:
+                aims.append(walk)
+            orig = (int(mark["x"]), int(mark["y"]))
+            if orig not in aims:
+                aims.append(orig)
+            first_xy = (int(clicked["x"]), int(clicked["y"]))
+            clicked_retry = False
+            for ax, ay in aims:
+                if clicked_retry and (ax, ay) == first_xy:
+                    continue
+                clicked = _click(ax, ay, space="screen")
+                clicked_retry = True
+                _sleep(0.5)
                 after = observe(mode="marks")
-                on = _stood_on_city(after, dest, frame, allow_panel=True)
+                on = _stood_on_city(after, dest, retry_frame, allow_panel=True)
                 if on.get("ok"):
-                    mark = {"x": px, "y": py, "n": 0, "kind": "city_tile_retry"}
+                    mark = mark2 or {"x": ax, "y": ay, "n": 0, "kind": "city_walk_retry"}
+                    hex_d = hex_d2 if mark2 is not None else 0.0
                     break
         stood = bool(on.get("ok"))
         out = {
@@ -450,6 +545,7 @@ def _move_to(
         }
         if not stood:
             out["reason"] = "not_stood_on_city"
+            out["path_reason"] = "not_stood_on_city"
             out["hint"] = "clicked the city hex but unit is still adjacent — Capture needs ON tile"
         return out
     if dest:

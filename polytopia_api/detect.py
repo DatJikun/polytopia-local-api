@@ -275,6 +275,53 @@ def move_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14) -> dict[str,
     return {"n": n, "ok": n >= 8, "x": int(x), "y": int(y), "kind": "move_tint"}
 
 
+def move_on_hex(
+    arr: np.ndarray,
+    x: int,
+    y: int,
+    pitch: int,
+    max_hex: float = 0.55,
+) -> dict[str, Any]:
+    """Centroid of move-blue pixels that sit ON this hex (not the adjacent ring).
+
+    Global ``find_move_marks`` keeps the 12 largest clusters. A city hex is
+    mostly building, so the leftover blue ring is small and often dropped.
+    """
+    h, w = arr.shape[:2]
+    pitch = max(8, int(pitch))
+    rx = max(8, int(round(pitch * 0.7)))
+    ry = max(8, int(round(pitch * 0.7 * 0.75)))
+    x0, x1 = max(0, int(x) - rx), min(w, int(x) + rx + 1)
+    y0, y1 = max(0, int(y) - ry), min(h, int(y) + ry + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 8:
+        return {"n": 0, "ok": False, "x": int(x), "y": int(y), "kind": "move_hex"}
+    gy_pitch = pitch * 0.75
+    xs: list[int] = []
+    ys: list[int] = []
+    for iy, row in enumerate(crop):
+        py = y0 + iy
+        for ix, pix in enumerate(row):
+            px = x0 + ix
+            dx = (px - int(x)) / pitch
+            dy = (py - int(y)) / gy_pitch
+            if dx * dx + dy * dy > max_hex * max_hex:
+                continue
+            if is_move_rgb(int(pix[0]), int(pix[1]), int(pix[2])):
+                xs.append(px)
+                ys.append(py)
+    n = len(xs)
+    if n < 8:
+        return {"n": n, "ok": False, "x": int(x), "y": int(y), "kind": "move_hex"}
+    return {
+        "n": n,
+        "ok": True,
+        "x": int(round(sum(xs) / n)),
+        "y": int(round(sum(ys) / n)),
+        "kind": "move_hex",
+    }
+
+
 def attack_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14) -> dict[str, Any]:
     """Garrison sprites hide clustered red hexes; count attack-red under the tile."""
     n = _patch_count(arr, x, y, radius, is_attack_rgb)
@@ -414,7 +461,7 @@ def observe_pixels(im: Image.Image) -> dict[str, Any]:
     flags = overlay_flags(arr)
     return {
         "overlay": flags,
-        "move_marks": find_move_marks(arr)[:12],
+        "move_marks": find_move_marks(arr)[:20],
         "attack_marks": flags.get("attack_marks") or find_attack_marks(arr)[:16],
         "fruit": find_fruit(arr)[:10],
     }

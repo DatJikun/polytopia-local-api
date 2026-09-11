@@ -1135,7 +1135,7 @@ def test_win_path_move_capture_attack():
         commands, "_click", side_effect=fake_click
     ), patch.object(commands, "_sleep"):
         r = commands.move_to(from_id="u1", city_id="c5_3")
-    assert r["ok"] is False and r["reason"] == "no_mark_on_city_tile"
+    assert r["ok"] is False and r["reason"] in {"no_mark_on_city_tile", "out_of_range"}
     assert r["stood_on_city"] is False
     assert "move_marks" in r and r.get("city_xy")
     assert r.get("suggested_tile_xy") == [200, 80]
@@ -1283,7 +1283,7 @@ def test_city_id_stays_resolvable_after_observe_drops_it():
     assert atk.get("dest") and atk["dest"]["id"] == "c22_17"
     assert atk["ok"] is False and atk["reason"] == "no_mark_on_target"
     assert mv.get("reason") != "need x,y or city_id/to_id", mv
-    assert mv["ok"] is False and mv["reason"] == "no_mark_on_city_tile"
+    assert mv["ok"] is False and mv["reason"] in {"no_mark_on_city_tile", "city_occupied"}
     assert mv.get("suggested_tile_xy") == [200, 80]
     assert cap.get("reason") != "no entity c22_17", cap
     assert cap["ok"] is False and cap["reason"] == "not_standing_on_city"
@@ -1451,8 +1451,12 @@ def test_unit_id_stays_resolvable_after_observe_drops_it():
     reset_obs()
 
 
-def test_move_to_clicks_city_tile_when_in_range():
-    """Warrior one hex from Disrof must walk onto the tile even if clustering missed the blue."""
+def test_move_to_clicks_blue_ring_at_city_foot():
+    """Live: blue on Disrof sits at the building foot (~plate), ~0.9 from roof tile_xy.
+
+    7ab379e treated that ring as adjacent and clicked the roof instead, so every
+    /move-to returned not_stood_on_city.
+    """
     from unittest.mock import patch
 
     from polytopia_api import commands
@@ -1461,17 +1465,7 @@ def test_move_to_clicks_city_tile_when_in_range():
     reset_obs()
     coords.reset()
     coords.set_frame(1280, 800)
-    city = {
-        "id": "c5_3",
-        "kind": "city",
-        "x": 200,
-        "y": 80,
-        "plate_y": 110,
-        "tile": [5, 3],
-        "tile_xy": [200, 80],
-        "tribe": "vengir",
-        "owner": "enemy",
-    }
+    city = _disrof_city()
     register_cities([city])
     clicks: list[tuple[int, int]] = []
 
@@ -1479,14 +1473,16 @@ def test_move_to_clicks_city_tile_when_in_range():
         clicks.append((int(x), int(y)))
         return {"ok": True, "x": int(x), "y": int(y)}
 
+    foot = {"id": "m_foot", "x": 200, "y": 104, "n": 22}
+    adj = {"id": "m_adj", "x": 164, "y": 80, "n": 80}
     before = {
         "layout": {"frame": [1280, 800]},
         "cities": [city],
         "cities_enemy": [city],
         "cities_own": [],
-        "move_marks": [],
-        "units": [{"id": "u1", "x": 168, "y": 80, "owner": "own"}],
-        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "move_marks": [adj, foot],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
         "overlay": {},
         "ready": {},
         "hud": {},
@@ -1494,8 +1490,9 @@ def test_move_to_clicks_city_tile_when_in_range():
     }
     after = {
         **before,
-        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
-        "unit": {"can_move": False, "capture": True, "no_actions": False},
+        "move_marks": [],
+        "units": [{"id": "u1", "x": 201, "y": 94, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
         "ready": {"capture": True},
     }
     selected = {"ok": True, "unit": before["unit"]}
@@ -1505,8 +1502,10 @@ def test_move_to_clicks_city_tile_when_in_range():
         commands, "_click", side_effect=fake_click
     ), patch.object(commands, "_sleep"):
         r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert clicks and clicks[0] == (200, 104), clicks
+    assert (164, 80) not in clicks
+    assert (200, 80) not in clicks
     assert r["ok"] is True and r["stood_on_city"] is True, r
-    assert clicks == [(200, 80)], clicks
     reset_obs()
 
 
@@ -1558,12 +1557,13 @@ def test_move_to_does_not_click_adjacent_mark():
         return {"ok": True, "x": int(x), "y": int(y)}
 
     adj = {"id": "m_adj", "x": 164, "y": 80, "n": 80}
+    foot = {"id": "m_foot", "x": 200, "y": 104, "n": 22}
     before = {
         "layout": {"frame": [1280, 800]},
         "cities": [city],
         "cities_enemy": [city],
         "cities_own": [],
-        "move_marks": [adj],
+        "move_marks": [adj, foot],
         "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
         "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
         "overlay": {},
@@ -1573,7 +1573,8 @@ def test_move_to_does_not_click_adjacent_mark():
     }
     after = {
         **before,
-        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
+        "move_marks": [],
+        "units": [{"id": "u1", "x": 201, "y": 94, "owner": "own"}],
         "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
         "ready": {"capture": True},
     }
@@ -1584,14 +1585,15 @@ def test_move_to_does_not_click_adjacent_mark():
         commands, "_click", side_effect=fake_click
     ), patch.object(commands, "_sleep"):
         r = commands.move_to(from_id="u1", city_id="c5_3")
-    assert clicks and clicks[0] == (200, 80), clicks
+    assert clicks and clicks[0] == (200, 104), clicks
     assert (164, 80) not in clicks
+    assert (200, 80) not in clicks
     assert r["ok"] is True and r["stood_on_city"] is True, r
     reset_obs()
 
 
-def test_move_to_ok_false_when_still_adjacent():
-    """Core live bug: ok:true without placing the unit ON the city tile."""
+def test_move_to_no_mark_does_not_click_building():
+    """In range but no blue on the city hex: honest no_mark, do not click the roof."""
     from unittest.mock import patch
 
     from polytopia_api import commands
@@ -1629,8 +1631,175 @@ def test_move_to_ok_false_when_still_adjacent():
         r = commands.move_to(from_id="u1", city_id="c5_3")
     assert r.get("ok") is False, r
     assert r.get("stood_on_city") is False
+    assert r.get("reason") == "no_mark_on_city_tile"
+    assert r.get("path_reason") == "no_mark_on_city_tile"
+    assert clicks == []
+    reset_obs()
+
+
+def test_move_to_out_of_range_reason():
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    far = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [{"x": 50, "y": 400, "n": 40}],
+        "units": [{"id": "u1", "x": 50, "y": 400, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    selected = {"ok": True, "unit": far["unit"]}
+    with patch.object(commands, "remember", return_value=far), patch.object(
+        commands, "observe", return_value=far
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click"
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert r.get("ok") is False
+    assert r.get("stood_on_city") is False
+    assert r.get("reason") == "out_of_range"
+    assert r.get("path_reason") == "out_of_range"
+    reset_obs()
+
+
+def test_move_to_ok_false_when_still_adjacent():
+    """Clicked the on-city blue but the unit is still next to Disrof."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    stuck = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [{"x": 200, "y": 104, "n": 22}, {"x": 164, "y": 80, "n": 80}],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    selected = {"ok": True, "unit": stuck["unit"]}
+    with patch.object(commands, "remember", return_value=stuck), patch.object(
+        commands, "observe", return_value=stuck
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert r.get("ok") is False, r
+    assert r.get("stood_on_city") is False
     assert r.get("reason") == "not_stood_on_city"
-    assert clicks and clicks[0] == (200, 80), clicks
+    assert clicks and clicks[0] == (200, 104), clicks
+    assert (164, 80) not in clicks
+    reset_obs()
+
+
+def test_move_to_reselects_after_city_panel():
+    """Roof click opens the city panel; re-select the unit and click the foot blue."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    roof = {"id": "m_roof", "x": 200, "y": 83, "n": 18}
+    foot = {"id": "m_foot", "x": 200, "y": 104, "n": 22}
+    base = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    before = {
+        **base,
+        "move_marks": [roof],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
+    }
+    city_panel = {
+        **base,
+        "move_marks": [],
+        "unit": {"train": True, "can_move": False, "no_actions": False},
+    }
+    reselected = {
+        **base,
+        "move_marks": [foot],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
+    }
+    stood = {
+        **base,
+        "move_marks": [],
+        "units": [{"id": "u1", "x": 201, "y": 94, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
+        "ready": {"capture": True},
+    }
+    mem = {"state": before}
+    observes = [city_panel, stood]
+
+    def fake_remember():
+        return mem["state"]
+
+    def fake_observe(mode="full"):
+        nxt = observes.pop(0) if observes else stood
+        mem["state"] = nxt
+        return nxt
+
+    selects = {"n": 0}
+
+    def fake_select(**_kw):
+        selects["n"] += 1
+        if selects["n"] >= 2:
+            mem["state"] = reselected
+            return {"ok": True, "unit": reselected["unit"]}
+        return {"ok": True, "unit": before["unit"]}
+
+    with patch.object(commands, "remember", side_effect=fake_remember), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "select_unit", side_effect=fake_select), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert selects["n"] >= 2, selects
+    assert (200, 104) in clicks, clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
     reset_obs()
 
 
@@ -1652,11 +1821,12 @@ def test_move_to_xy_walks_onto_city_not_plate():
         clicks.append((int(x), int(y)))
         return {"ok": True, "x": int(x), "y": int(y)}
 
+    foot = {"x": 200, "y": 104, "n": 22}
     before = {
         "layout": {"frame": [1280, 800]},
         "cities": [city],
         "cities_enemy": [city],
-        "move_marks": [],
+        "move_marks": [foot],
         "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own"}],
         "unit": {"can_move": True, "no_actions": False, "unit": "rider"},
         "overlay": {},
@@ -1666,7 +1836,8 @@ def test_move_to_xy_walks_onto_city_not_plate():
     }
     after = {
         **before,
-        "units": [{"id": "u1", "x": 201, "y": 80, "owner": "own"}],
+        "move_marks": [],
+        "units": [{"id": "u1", "x": 201, "y": 94, "owner": "own"}],
         "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
         "ready": {"capture": True},
     }
@@ -1679,18 +1850,38 @@ def test_move_to_xy_walks_onto_city_not_plate():
         r = commands.move_to(from_id="u1", x=200, y=110)
     assert r["ok"] is True and r["stood_on_city"] is True, r
     assert clicks and clicks[0][1] < 110, clicks
-    assert clicks[0] == (200, 80), clicks
+    assert clicks[0] == (200, 104), clicks
     reset_obs()
 
 
 def test_city_tile_center_lifts_plate_xy():
-    from polytopia_api.combat import city_tile_center
+    from polytopia_api.combat import city_tile_center, city_walk_center
 
     city = {"x": 200, "y": 80, "plate_y": 110, "tile_xy": [200, 110]}
     c = city_tile_center(city, (1280, 800))
     assert c is not None
     assert c[1] < 110
     assert abs(c[1] - 83) <= 2
+    w = city_walk_center({"x": 200, "y": 80, "plate_y": 110}, (1280, 800))
+    assert w is not None
+    assert 90 <= w[1] <= 100
+    assert w[1] > c[1]
+
+
+def test_move_on_hex_finds_foot_ring():
+    from polytopia_api.combat import hex_pitch
+    from polytopia_api.detect import as_rgb, move_on_hex
+
+    im = Image.new("RGB", (1280, 800), (20, 20, 20))
+    px = im.load()
+    for y in range(98, 110):
+        for x in range(192, 208):
+            px[x, y] = (146, 204, 255)
+    arr = as_rgb(im)
+    hit = move_on_hex(arr, 200, 94, hex_pitch(1280, 800))
+    assert hit["ok"] is True, hit
+    assert abs(hit["x"] - 200) < 8
+    assert 98 <= hit["y"] <= 110
 
 
 def test_attack_fast_no_mark_not_timeout():
@@ -1776,12 +1967,16 @@ if __name__ == "__main__":
     test_city_id_stays_resolvable_after_observe_drops_it()
     test_vengir_fps_do_not_accumulate_across_frames()
     test_unit_id_stays_resolvable_after_observe_drops_it()
-    test_move_to_clicks_city_tile_when_in_range()
+    test_move_to_clicks_blue_ring_at_city_foot()
     test_move_to_never_returns_ok_null()
     test_move_to_does_not_click_adjacent_mark()
+    test_move_to_no_mark_does_not_click_building()
+    test_move_to_out_of_range_reason()
     test_move_to_ok_false_when_still_adjacent()
+    test_move_to_reselects_after_city_panel()
     test_move_to_xy_walks_onto_city_not_plate()
     test_city_tile_center_lifts_plate_xy()
+    test_move_on_hex_finds_foot_ring()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
     print("ok")

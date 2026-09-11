@@ -104,8 +104,28 @@ def city_tile_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tup
     return x, int(city["y"])
 
 
+def city_walk_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tuple[int, int] | None:
+    """Ground of the city hex — between building and nameplate, not the roof.
+
+    Live Disrof: the blue move ring sits at the building *foot* (~plate_y − 0.45
+    pitch). ``city_tile_center`` is ~0.75 pitch up (roof); that made the on-tile
+    mark look ~1.0 hex away (same as adjacent) so /move-to never clicked it.
+    """
+    if not city:
+        return None
+    pitch = hex_pitch(*frame)
+    try:
+        cx = int(city["x"])
+    except (KeyError, TypeError, ValueError):
+        return city_tile_center(city, frame)
+    if city.get("plate_y") is not None:
+        plate = int(city["plate_y"])
+        return cx, max(0, plate - int(round(0.45 * pitch)))
+    return city_tile_center(city, frame)
+
+
 def city_stand_points(city: dict[str, Any] | None, frame: tuple[int, int]) -> list[tuple[int, int]]:
-    """Click candidates for the standable hex (tile, then plate-up, then building)."""
+    """Click candidates: walkable ground first, then roof/tile, then building."""
     if not city:
         return []
     pitch = hex_pitch(*frame)
@@ -119,6 +139,9 @@ def city_stand_points(city: dict[str, Any] | None, frame: tuple[int, int]) -> li
         seen.add(key)
         pts.append((int(px), int(py)))
 
+    walk = city_walk_center(city, frame)
+    if walk:
+        _add(walk[0], walk[1])
     center = city_tile_center(city, frame)
     if center:
         _add(center[0], center[1])
@@ -128,6 +151,7 @@ def city_stand_points(city: dict[str, Any] | None, frame: tuple[int, int]) -> li
         return pts
     if city.get("plate_y") is not None:
         plate = int(city["plate_y"])
+        _add(cx, max(0, plate - int(round(0.45 * pitch))))
         _add(cx, max(0, plate - int(round(0.75 * pitch))))
         _add(cx, max(0, plate - pitch))
     if city.get("y") is not None:
@@ -264,9 +288,16 @@ def unit_on_city(
     if not city:
         return {"ok": False, "reason": "no_city"}
     pitch = hex_pitch(*frame)
+    centers: list[tuple[int, int]] = []
+    walk = city_walk_center(city, frame)
     center = city_tile_center(city, frame)
-    if center is None:
+    if walk:
+        centers.append(walk)
+    if center and center not in centers:
+        centers.append(center)
+    if not centers:
         return {"ok": False, "reason": "no_city", "hex_pitch": pitch}
+    report = walk or center
     hit = None
     best_d = max_hex
     for u in units or []:
@@ -274,19 +305,20 @@ def unit_on_city(
             owner = str(u.get("owner") or "")
             if owner and owner != want_owner:
                 continue
-        try:
-            d = tile_dist(int(u["x"]), int(u["y"]), center[0], center[1], pitch)
-        except (KeyError, TypeError, ValueError):
-            continue
-        if d <= best_d:
-            best_d = d
-            hit = u
+        for cx, cy in centers:
+            try:
+                d = tile_dist(int(u["x"]), int(u["y"]), cx, cy, pitch)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if d <= best_d:
+                best_d = d
+                hit = u
     if hit is None:
         return {
             "ok": False,
             "reason": "not_standing_on_city",
             "hex_pitch": pitch,
-            "tile_xy": [center[0], center[1]],
+            "tile_xy": [report[0], report[1]] if report else None,
             "hex_dist": None,
         }
     return {
@@ -294,7 +326,7 @@ def unit_on_city(
         "reason": "unit_on_tile",
         "unit": hit,
         "hex_pitch": pitch,
-        "tile_xy": [center[0], center[1]],
+        "tile_xy": [report[0], report[1]] if report else None,
         "hex_dist": round(best_d, 3),
     }
 
