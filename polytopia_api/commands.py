@@ -9,7 +9,7 @@ from . import combat
 from . import coords
 from . import driver
 from . import snapshot
-from .observe import observe, remember, lookup
+from .observe import lookup, lookup_city, observe, remember
 
 ATTACK_BUDGET_S = 7.5
 
@@ -28,10 +28,22 @@ def _click(x: int, y: int, space: str = "screen", repeats: int = 1) -> dict[str,
 
 
 def _resolve(ident: str | None, space: str = "screen") -> dict[str, Any] | None:
+    """Resolve city_id/unit id from the last observe, then the turn-sticky index.
+
+    A later frame that misses a frost plate must not forget c22_17 mid-turn.
+    """
     if not ident:
         return None
-    obs = remember() or observe()
-    return lookup(obs, str(ident))
+    ident = str(ident)
+    mem = remember()
+    if mem:
+        hit = lookup(mem, ident)
+        if hit:
+            return hit
+    hit = lookup_city(ident)
+    if hit:
+        return hit
+    return lookup(observe(), ident)
 
 
 def _entity_click_xy(hit: dict[str, Any]) -> tuple[int, int]:
@@ -345,12 +357,10 @@ def attack(
         return round(time.time() - t0, 3)
 
     ident = to_id or city_id
-    prev = remember()
-    dest = lookup(prev, ident) if prev and ident else None
-    if dest is None and ident:
-        dest = _resolve(ident, space)
+    dest = _resolve(ident, space) if ident else None
     if dest:
         space = "screen"
+        dest = dict(dest)
     if _elapsed() >= ATTACK_BUDGET_S:
         return {
             "ok": False,
@@ -379,7 +389,7 @@ def attack(
             "selected": selected,
             "elapsed_s": _elapsed(),
         }
-    before = remember() or (selected or {}).get("state") or prev
+    before = remember() or (selected or {}).get("state")
     if before is None:
         before = observe()
     elapsed = _elapsed()

@@ -14,25 +14,66 @@ from . import entities
 from . import snapshot
 
 _LAST: dict[str, Any] | None = None
+# city_id → last known city for this turn. Attack/move/capture must still
+# resolve c22_17 after a later observe misses the frost plate.
+_CITY_INDEX: dict[str, dict[str, Any]] = {}
 
 
 def remember() -> dict[str, Any] | None:
     return _LAST
 
 
-def lookup(obs: dict[str, Any], ident: str) -> dict[str, Any] | None:
+def reset() -> None:
+    global _LAST, _CITY_INDEX
+    _LAST = None
+    _CITY_INDEX = {}
+
+
+def lookup_city(ident: str) -> dict[str, Any] | None:
+    ident = str(ident)
+    hit = _CITY_INDEX.get(ident)
+    if hit:
+        return hit
+    low = ident.lower()
+    for c in _CITY_INDEX.values():
+        name = c.get("name")
+        if name and str(name).lower() == low:
+            return c
+        if str(c.get("id_alias") or "") == ident:
+            return c
+    return None
+
+
+def register_cities(cities: list[dict[str, Any]] | None) -> None:
+    for c in cities or []:
+        cid = str(c.get("id") or "")
+        if not cid:
+            continue
+        stored = dict(c)
+        _CITY_INDEX[cid] = stored
+        alias = stored.get("id_alias")
+        if alias:
+            _CITY_INDEX[str(alias)] = stored
+
+
+def lookup(obs: dict[str, Any] | None, ident: str) -> dict[str, Any] | None:
     ident = str(ident)
     keys = ("units", "cities", "cities_own", "cities_enemy", "villages", "move_marks", "fruit", "attack_marks")
     if ident.startswith("c"):
         keys = ("cities", "cities_own", "cities_enemy") + keys
     low = ident.lower()
-    for key in keys:
-        for it in obs.get(key) or []:
-            if str(it.get("id")) == ident:
-                return it
-            name = it.get("name")
-            if name and str(name).lower() == low:
-                return it
+    if obs:
+        for key in keys:
+            for it in obs.get(key) or []:
+                if str(it.get("id")) == ident:
+                    return it
+                name = it.get("name")
+                if name and str(name).lower() == low:
+                    return it
+                if ident.startswith("c") and str(it.get("id_alias") or "") == ident:
+                    return it
+    if ident.startswith("c") or ident[:1].isalpha():
+        return lookup_city(ident)
     return None
 
 
@@ -72,14 +113,31 @@ def stabilize(
     items: list[dict[str, Any]],
     prev: list[dict[str, Any]] | None,
     max_dist: int = 56,
+    keep_missing: bool = False,
 ) -> list[dict[str, Any]]:
-    """Keep ids stable. Cities match by tile (grid hash), not list index."""
+    """Keep ids stable. Cities match by tile (grid hash), not list index.
+
+    ``keep_missing`` carries unmatched previous cities (seen=False) so a
+    mid-turn observe that misses a frost plate does not forget ``c22_17``.
+    """
     if not items:
+        if keep_missing and prev:
+            out = []
+            for p in prev:
+                if not p.get("id"):
+                    continue
+                d = dict(p)
+                d["stable"] = True
+                d["seen"] = False
+                d["sticky"] = True
+                out.append(d)
+            return out
         return []
     used: set[str] = set()
     out: list[dict[str, Any]] = []
     for it in items:
         d = dict(it)
+        d["seen"] = True
         tile = _tile_key(d)
         tile_hit = None
         if tile is not None:
@@ -113,12 +171,23 @@ def stabilize(
                 best_d = int(dist ** 0.5)
                 best = p
         if best and best.get("id"):
-            if not _is_grid_city_id(d.get("id")):
+            prev_id = str(best["id"])
+            new_id = str(d.get("id") or "")
+            # Grid-hash jitter (c22_17 vs c22_18) must keep the first id.
+            if _is_grid_city_id(new_id) and _is_grid_city_id(prev_id) and new_id != prev_id:
+                d["id_alias"] = new_id
+                d["id"] = prev_id
+                pt = _tile_key(best)
+                if pt:
+                    d["tile"] = [pt[0], pt[1]]
+            elif not _is_grid_city_id(d.get("id")):
                 d["id"] = best["id"]
             _sticky_city_fields(d, best)
             d["stable"] = True
             used.add(str(d["id"]))
-            used.add(str(best["id"]))
+            used.add(prev_id)
+            if new_id:
+                used.add(new_id)
         else:
             named = None
             want = str(d.get("name") or "").lower()
@@ -140,6 +209,17 @@ def stabilize(
             else:
                 d["stable"] = False
         out.append(d)
+    if keep_missing:
+        for p in prev or []:
+            pid = str(p.get("id") or "")
+            if not pid or pid in used:
+                continue
+            d = dict(p)
+            d["stable"] = True
+            d["seen"] = False
+            d["sticky"] = True
+            used.add(pid)
+            out.append(d)
     return out
 
 
@@ -172,9 +252,20 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
     arr = detect.as_rgb(im)
     mapped = entities.observe_map(arr)
     prev = _LAST
+    prev_turn = ((prev or {}).get("hud") or {}).get("turn")
+    new_turn = (hud or {}).get("turn")
+    if prev_turn is not None and new_turn is not None and prev_turn != new_turn:
+        _CITY_INDEX.clear()
+        prev = None
     units = stabilize(_ids("u", mapped["units"]), (prev or {}).get("units"))
     # City ids are grid hashes (c{gx}_{gy}); never reindex as c0/c1.
-    cities = stabilize(list(mapped["cities"]), (prev or {}).get("cities"))
+    # Keep unmatched previous cities so attack/move/capture still resolve.
+    cities = stabilize(
+        list(mapped["cities"]),
+        (prev or {}).get("cities"),
+        keep_missing=True,
+    )
+    register_cities(cities)
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     attack_marks = _ids("a", pix.get("attack_marks") or overlay.get("attack_marks") or [])

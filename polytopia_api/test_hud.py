@@ -439,6 +439,24 @@ def test_stable_entity_ids():
     by_id = {c["id"]: c for c in hashed}
     assert set(by_id) == {"c5_3", "c8_4"}
     assert by_id["c5_3"]["tribe"] == "vengir" and by_id["c5_3"]["name"] == "Disrof"
+    # Grid-hash jitter must keep the first sticky id (live: c22_17 vs c22_18).
+    jitter = stabilize(
+        [{"id": "c22_18", "tile": [22, 18], "x": 202, "y": 88, "tribe": "vengir", "owner": "enemy"}],
+        [{"id": "c22_17", "tile": [22, 17], "x": 200, "y": 80, "tribe": "vengir", "owner": "enemy", "name": "Disrof"}],
+    )
+    assert jitter[0]["id"] == "c22_17"
+    assert jitter[0]["name"] == "Disrof"
+    missing = stabilize(
+        [],
+        [{"id": "c22_17", "tile": [22, 17], "x": 200, "y": 80, "tribe": "vengir", "owner": "enemy"}],
+        keep_missing=True,
+    )
+    assert missing and missing[0]["id"] == "c22_17" and missing[0].get("seen") is False
+    from polytopia_api.observe import lookup, register_cities, reset as reset_obs
+    reset_obs()
+    register_cities([{"id": "c22_17", "kind": "city", "x": 200, "y": 80, "tile": [22, 17]}])
+    assert lookup({"cities": [], "cities_enemy": []}, "c22_17")["id"] == "c22_17"
+    reset_obs()
 
 
 def test_gold_windows_are_not_oumaji():
@@ -482,6 +500,54 @@ def test_disrof_gold_windows_without_magenta_sample():
     assert frost, cities
     assert all(c["tribe"] == "vengir" and c["owner"] == "enemy" for c in frost), frost
     assert all(c.get("tile") for c in frost)
+    assert all(float(c.get("confidence") or 0) >= 0.78 for c in frost), frost
+    assert all(
+        "gold_lamps" in (c.get("evidence") or []) or "magenta_roof" in (c.get("evidence") or [])
+        for c in frost
+    )
+
+
+def test_bardur_own_not_eaten_by_vengir_frost():
+    """Live M20: Bardur Ufla/Orkork/Grugru must stay cities_own; frost FPs ≠ Disrof."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+
+    def bardur_city(x, y):
+        d.rectangle((x, y, x + 60, y + 60), fill=(90, 85, 80))
+        d.rectangle((x - 20, y + 70, x + 80, y + 92), fill=(180, 180, 178))
+        d.ellipse((x + 62, y + 74, x + 78, y + 90), fill=(224, 188, 63))  # plate star, not windows
+        d.rectangle((x, y + 76, x + 6, y + 88), fill=(40, 40, 40))
+
+    bardur_city(400, 300)
+    bardur_city(880, 360)
+    bardur_city(1180, 520)
+    # Real Disrof: dark stone + magenta roof + gold lamps + frost plate
+    d.rectangle((200, 355, 270, 418), fill=(90, 85, 80))
+    d.rectangle((214, 348, 256, 378), fill=(150, 74, 144))
+    d.rectangle((220, 382, 232, 396), fill=(224, 188, 63))
+    d.rectangle((186, 428, 308, 450), fill=(180, 180, 178))
+    d.ellipse((278, 432, 296, 448), fill=(224, 188, 63))
+    d.rectangle((200, 434, 206, 444), fill=(40, 40, 40))
+    # Frost fragments with no roof / no lamps (the ~7 vengir FPs)
+    for x0 in (520, 700, 1020, 1300, 640, 1480):
+        d.rectangle((x0, 180, x0 + 90, 202), fill=(180, 180, 178))
+        d.rectangle((x0 + 10, 186, x0 + 16, 196), fill=(40, 40, 40))
+
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 3, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert 1 <= len(vengir) <= 2, vengir
+    assert any(
+        "magenta_roof" in (c.get("evidence") or []) or "gold_lamps" in (c.get("evidence") or [])
+        for c in vengir
+    ), vengir
+    assert all(float(c.get("confidence") or 0) >= 0.78 for c in vengir), vengir
 
 
 def test_attack_timeout_skips_second_observe():
@@ -954,6 +1020,133 @@ def test_win_path_move_capture_attack():
     assert clicks == [(203, 83)], clicks
 
 
+def test_city_id_stays_resolvable_after_observe_drops_it():
+    """Live smoke: first /attack resolved c22_17; later calls forgot it."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c22_17",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [22, 17],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+        "n": 400,
+        "confidence": 0.78,
+        "evidence": ["frost_plate", "magenta_roof", "gold_lamps"],
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    blank = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [],
+        "cities_own": [],
+        "cities_enemy": [],
+        "units": [{"id": "u9", "x": 180, "y": 80, "owner": "own"}],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": True},
+        "attack_marks": [{"x": 400, "y": 400, "n": 20}],
+        "move_marks": [{"x": 400, "y": 400, "n": 20}],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    selected = {"ok": True, "unit": blank["unit"]}
+    with patch.object(commands, "remember", return_value=blank), patch.object(
+        commands, "observe", return_value=blank
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        atk = commands.attack(from_id="u9", city_id="c22_17")
+        mv = commands.move_to(from_id="u9", city_id="c22_17")
+        cap = commands.capture(city_id="c22_17")
+    assert atk.get("reason") != "need to_id/city_id or x,y", atk
+    assert atk.get("dest") and atk["dest"]["id"] == "c22_17"
+    assert atk["ok"] is False and atk["reason"] == "no_mark_on_target"
+    assert mv.get("reason") != "need x,y or city_id/to_id", mv
+    assert mv["ok"] is False and mv["reason"] == "no_mark_on_city_tile"
+    assert cap.get("reason") != "no entity c22_17", cap
+    assert cap["ok"] is False and cap["reason"] == "not_standing_on_city"
+    assert clicks == []
+
+    on_city = {
+        **blank,
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [{"id": "u9", "x": 201, "y": 80, "owner": "own"}],
+        "unit": {"capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+        "overlay": {"capture_blobs": [{"x": 180, "y": 740, "n": 200}]},
+        "attack_marks": [{"x": 203, "y": 83, "n": 40}],
+        "move_marks": [{"x": 202, "y": 81, "n": 50}],
+    }
+    after_atk = {
+        **on_city,
+        "units": [
+            {"id": "u8", "kind": "unit", "x": 201, "y": 82, "hp": 7, "n": 28, "owner": "enemy"},
+            {"id": "u9", "x": 140, "y": 80, "owner": "own"},
+        ],
+    }
+    before_atk = {
+        **on_city,
+        "units": [
+            {"id": "u8", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "enemy"},
+            {"id": "u9", "x": 140, "y": 80, "owner": "own"},
+        ],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+    }
+    captured_state = {
+        **on_city,
+        "cities_enemy": [],
+        "cities_own": [{**city, "owner": "own", "tribe": "bardur"}],
+        "cities": [{**city, "owner": "own", "tribe": "bardur"}],
+    }
+    clicks.clear()
+    with patch.object(commands, "remember", return_value=before_atk), patch.object(
+        commands, "observe", return_value=after_atk
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": before_atk["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        atk = commands.attack(from_id="u9", city_id="c22_17")
+    assert atk["ok"] is True and atk["hp_dropped"] is True, atk
+    clicks.clear()
+    after_move = {
+        **on_city,
+        "units": [{"id": "u9", "x": 201, "y": 80, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False},
+        "ready": {"capture": True},
+    }
+    with patch.object(commands, "remember", return_value=on_city), patch.object(
+        commands, "observe", return_value=after_move
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        mv = commands.move_to(from_id="u9", city_id="c22_17")
+    assert mv["ok"] is True and mv["stood_on_city"] is True, mv
+    clicks.clear()
+    with patch.object(commands, "remember", return_value=after_move), patch.object(
+        commands, "observe", return_value=captured_state
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        cap = commands.capture(city_id="c22_17")
+    assert cap["ok"] is True and cap["captured"] is True, cap
+    reset_obs()
+
+
 def test_dock_zone_blocks_end_turn_pixels():
     coords.reset()
     coords.set_frame(1280, 800)
@@ -979,6 +1172,7 @@ if __name__ == "__main__":
     test_stable_entity_ids()
     test_gold_windows_are_not_oumaji()
     test_disrof_gold_windows_without_magenta_sample()
+    test_bardur_own_not_eaten_by_vengir_frost()
     test_attack_timeout_skips_second_observe()
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
@@ -990,5 +1184,6 @@ if __name__ == "__main__":
     test_attack_garrison_hp_and_on_city()
     test_attack_marks_and_strike()
     test_win_path_move_capture_attack()
+    test_city_id_stays_resolvable_after_observe_drops_it()
     test_dock_zone_blocks_end_turn_pixels()
     print("ok")

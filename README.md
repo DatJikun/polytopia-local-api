@@ -40,16 +40,16 @@ python3 -m polytopia_api.mcp      # local_* dla Cursor MCP
 
 1. `GET /health` — okno + `layout.screen.END_TURN [765,746]`; Tech ≥64 px od End Turn (`tech_too_close: false`).
 2. `POST /click {"name":"TECH_TREE"}` (albo `POST /tech`) — nigdy offset obok End Turn.
-3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnym `city_id` = `c{gx}_{gy}`** (hash kafelka, nie indeks listy) i `cities_enemy[].tile: [gx,gy]`. Enemy: `tribe==vengir` albo ciemny kamień + nameplate; jasne oumaji-ghosty bez purple/gold-on-dark odpadają. `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr. `hud.turn_trusted` jest **false** gdy OCR tury jest poniżej last labeled/clocked (`turn_floor` z `latest.json`, najwyższego `T{n}.json`, albo `POLYTOPIA_TURN=`); `turn` wtedy `null`, `turn_ocr` zostaje (np. 2 przy T26). `stale` / `missing` gdy cache. `turn_diff.alerts`.
+3. `GET /observe` — `units` / `cities_own` / `cities_enemy` ze **stabilnym `city_id` = `c{gx}_{gy}`** (hash kafelka, nie indeks listy) i `cities_enemy[].tile: [gx,gy]`. **`city_id` zostaje na całą turę** — attack/move-to/capture resolvują `c22_17` nawet gdy kolejny observe zgubi frost plate (indeks sticky + `seen:false`). `cities_own` to Bardur (`owner:own`); Vengir FP nie zjada własnych miast. Enemy Vengir = **magenta roof albo gold lamps na ciemnym kamieniu + frost plate** (`evidence`, `confidence` ≥0.78); gołe frost fragmenty odpadają (max 2 unnamed vengir). Jasne oumaji-ghosty bez purple/gold-on-dark odpadają. `villages` zwykle `[]`; `fog_edge`; HUD `turn`/`stars`/`score` z OCR + cropów cyfr. `hud.turn_trusted` jest **false** gdy OCR tury jest poniżej last labeled/clocked (`turn_floor` z `latest.json`, najwyższego `T{n}.json`, albo `POLYTOPIA_TURN=`); `turn` wtedy `null`, `turn_ocr` zostaje (np. 2 przy T26). `stale` / `missing` gdy cache. `turn_diff.alerts`.
 4. W-path (Disrof): `POST /attack {"from_id":"uX","city_id":"cY"}` — czerwony mark przy **garrison unit xy**, HP z paska unita na kafelku (nie `n`/`w` plate), `hp_dropped` albo jasne `no_actions` (<8s). `POST /move-to {"from_id":"uZ","city_id":"cY"}` — niebieski mark najbliższy **środka tile** (nie plate); `stood_on_city`; bez marka w 0.6 hex → `no_mark_on_city_tile`. `POST /capture {"city_id":"cY"}` tylko gdy unit ON (<0.4 hex) + blob w UNIT_CROP; inaczej `not_standing_on_city` bez kliku; `captured` gdy enemy straci `city_id`. `POST /recruit {"city_id":"c0"}` — nameplate → TRAIN blob.
 5. `POST /end-turn` — snapshot. **Stale HUD nie nazywa pliku**. Podaj `{"turn":25}` albo zegar `last+1`.
 6. Raw `POST /click` w strefie docka (prawy dół / End Turn) jest **zabroniony** — computerUse nie może kończyć tury. `layout.dock_zone` w `/health`.
 
 ```text
 POST /back
-GET  /observe  → city_id vengir + tile [gx,gy]
-POST /attack   {"from_id":"uX","city_id":"cY"} → hp_dropped true (albo jasny no_actions)
-POST /move-to  {"from_id":"uZ","city_id":"cY"} → stood_on_city true
+GET  /observe  → Disrof in cities_enemy (vengir, high conf / evidence) AND Bardur in cities_own
+POST /attack   {"from_id":"uX","city_id":"cY"} → hp_dropped true (albo jasny no_actions / no_mark)
+POST /move-to  {"from_id":"uZ","city_id":"cY"} → stood_on_city true (city_id wciąż resolvuje)
 POST /capture  {"city_id":"cY"} → captured true
 ```
 
@@ -91,7 +91,7 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 `GET /observe` (screen pixels, `hits_space: "screen"`):
 
 - `units[]` — HP-bar, `id` `u0`…, `tribe` / `owner`
-- `cities` / `cities_own` / `cities_enemy` — Moonrise **frosted** nameplate (szary ~180, nie 215-white) + kolor plemienia. `id` = `c{gx}_{gy}`, pole `tile`. Vengir = fioletowy dach **albo złote okna na frost plate** (nie drop jako Oumaji). Jasny oumaji-looking na gorącej białej płytce odpada. `name` opcjonalne (OCR płytek jest pomijane gdy plemię już znane — `/attack` <8s). Lookup po `city_id`.
+- `cities` / `cities_own` / `cities_enemy` — Moonrise **frosted** nameplate (szary ~180, nie 215-white) + kolor plemienia. `id` = `c{gx}_{gy}`, pole `tile`. **Sticky na turę** (lookup po `city_id` działa po ataku nawet gdy frame zgubi miasto). `cities_own` = Bardur. Vengir = fioletowy dach **albo złote okna na frost plate** (`evidence: magenta_roof|gold_lamps`, wyższy `confidence`); gołe frost FPs odpadają. Jasny oumaji-looking na gorącej białej płytce odpada. `name` opcjonalne (OCR płytek jest pomijane gdy plemię już znane — `/attack` <8s). Lookup po `city_id`.
 - `POST /move-to` — niebieskie marki po select `from_id`; cel = środek budynku (~`plate_y` minus ~0.75 hex). `stood_on_city` po re-observe.
 - `POST /capture` — gate ON tile (<0.4 hex) **oraz** `unit.capture` / blob w UNIT_CROP. Bez tego `not_standing_on_city`, zero klików. `captured` gdy `cities_enemy` straci ten `city_id` albo owner→own. Hałaśliwe mapowe `do_it_blobs` **nie** klikają.
 - `attack_marks[]` — czerwone hexy ataku

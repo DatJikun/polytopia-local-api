@@ -96,13 +96,16 @@ def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tup
     bardur_n = votes.get("bardur", 0)
     total = sum(votes.values())
     mean_lum = float(patch.astype(np.int32).mean())
-    # Purple roof, or gold windows on a dark building (Disrof), not sand.
+    # Purple roof is decisive (Disrof magenta).
     if vengir_n >= 3 or (total and vengir_n >= 0.08 * total):
         return "vengir", rgb
     if oumaji_n and vengir_n:
         return "vengir", rgb
-    # Gold window lamps match Oumaji sand. On Bardur-grey stone they are Vengir.
+    # Gold lamps match Oumaji sand. On dark stone they are Vengir windows —
+    # unless Bardur wood is the majority (own cities + gold nameplate stars).
     if oumaji_n and bardur_n:
+        if bardur_n > oumaji_n and (not total or bardur_n >= 0.45 * total):
+            return "bardur", rgb
         return "vengir", rgb
     if oumaji_n and mean_lum < 135 and oumaji_n < 0.50 * total:
         return "vengir", rgb
@@ -312,6 +315,23 @@ def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
     return int(mag.sum())
 
 
+def _gold_window_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
+    """Gold lamps on the building (above the plate), not the nameplate star."""
+    h, w = arr.shape[:2]
+    x0 = max(0, cx - max(16, bw // 2))
+    x1 = min(w, cx + max(16, bw // 2) + 1)
+    y0 = max(0, cy - up * 2 - 8)
+    y1 = max(y0 + 1, min(h, cy - 6))
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 20:
+        return 0
+    r = crop[:, :, 0].astype(np.int32)
+    g = crop[:, :, 1].astype(np.int32)
+    b = crop[:, :, 2].astype(np.int32)
+    gold = (r >= 180) & (g >= 140) & (g <= 220) & (b <= 110) & (r >= b + 60)
+    return int(gold.sum())
+
+
 def _plate_contrast(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool:
     """Letters (or the star/icon) punch holes in the frost; snow does not.
 
@@ -367,16 +387,24 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         if not _plate_contrast(arr, cx, cy, bw, bh):
             continue
-        tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14)
+        sampled_tribe, rgb = sample_patch_tribe(
+            arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14
+        )
+        tribe = sampled_tribe
         if is_water_rgb(*rgb):
             continue
         roof_n = _vengir_roof_pixels(arr, cx, cy, bw, up)
+        gold_n = _gold_window_pixels(arr, cx, cy, bw, up)
         frost_plate = _plate_is_frost(arr, cx, cy, bw, bh)
+        strong_vengir = roof_n >= 8 or gold_n >= 8
         if roof_n >= 8:
             tribe = "vengir"
         # Gold lamps on a frost nameplate are Disrof, not a desert city.
-        if tribe == "oumaji" and frost_plate:
+        # Bare frost + sand-colored pixels (no roof, no lamps) are FPs.
+        if tribe == "oumaji" and frost_plate and strong_vengir:
             tribe = "vengir"
+        if tribe == "vengir" and sampled_tribe not in {"vengir"} and not strong_vengir:
+            continue
         # Skip plate OCR for known tribes — names are optional and tesseract
         # on every frost cluster made /attack hang past 12s.
         name = ""
@@ -395,12 +423,23 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             conf = 0.55
         if tribe == "vengir":
             conf = 0.70 if name else 0.64
+            if strong_vengir:
+                conf = max(conf, 0.78)
         if name and (tribe != _own_tribe() or len(name) >= 5):
             conf = max(conf, 0.76)
         if tribe == "unknown":
             conf = 0.70 if name else 0.50
         if conf < 0.55:
             continue
+        evidence: list[str] = []
+        if frost_plate:
+            evidence.append("frost_plate")
+        if roof_n >= 8:
+            evidence.append("magenta_roof")
+        if gold_n >= 8:
+            evidence.append("gold_lamps")
+        if marks:
+            evidence.append("gold_star")
         building_y = max(0, cy - up // 2)
         frame = (w, h)
         tile_xy = combat.city_tile_center(
@@ -426,6 +465,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "tribe": tribe,
                 "owner": "own" if own else "enemy",
                 "confidence": conf,
+                "evidence": evidence,
                 "rgb": rgb,
             }
         )
@@ -436,21 +476,64 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             -int(c["n"]),
         )
     )
-    return _dedupe_cities(cities)[:12]
+    return _cap_vengir(_dedupe_cities(cities))[:12]
 
 
 def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
-    if a.get("tile") is not None and a.get("tile") == b.get("tile"):
-        if a.get("owner") == b.get("owner"):
-            return 10**6
-        return dist
+    """Same hex → one city. Own Bardur must not be eaten by a nearby Vengir FP.
+
+    One Disrof plate can split into a grey-stone (Bardur-looking) fragment and a
+    gold/magenta hit. Those share a nameplate; distinct cities do not.
+    """
+    ta, tb = a.get("tile"), b.get("tile")
+    if ta is not None and tb is not None and ta == tb:
+        return 10**6
+    if _plates_overlap(a, b):
+        return 10**6
+    oa, ob = a.get("owner"), b.get("owner")
+    if oa and ob and oa != ob:
+        return 0
     tribes = {a.get("tribe"), b.get("tribe")}
-    if tribes == {"vengir", "bardur"}:
-        return max(dist, 96)
+    if tribes == {"vengir"}:
+        return max(dist, 80)
     return dist
 
 
+def _plates_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    try:
+        ax, aw = int(a["x"]), int(a.get("w") or 40)
+        bx, bw = int(b["x"]), int(b.get("w") or 40)
+        ay = int(a.get("plate_y") or a["y"])
+        by = int(b.get("plate_y") or b["y"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if abs(ay - by) > 12:
+        return False
+    return abs(ax - bx) <= (aw + bw) / 2 + 8
+
+
 def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    # Same nameplate: gold/magenta Disrof wins over the grey-stone half.
+    # Distinct hexes with different owners never reach here unless plates overlap.
+    def _disrof(c: dict[str, Any]) -> bool:
+        ev = c.get("evidence") or []
+        return c.get("tribe") == "vengir" and ("magenta_roof" in ev or "gold_lamps" in ev)
+
+    if _disrof(a) and not _disrof(b):
+        win = dict(a)
+        if b.get("name") and not win.get("name"):
+            win["name"] = b["name"]
+        return win
+    if _disrof(b) and not _disrof(a):
+        win = dict(b)
+        if a.get("name") and not win.get("name"):
+            win["name"] = a["name"]
+        return win
+    own = _own_tribe()
+    if a.get("owner") == "own" and b.get("owner") != "own" and a.get("tribe") == own:
+        return a
+    if b.get("owner") == "own" and a.get("owner") != "own" and b.get("tribe") == own:
+        return b
     if a.get("tribe") == "vengir" and b.get("tribe") != "vengir":
         win = dict(a)
         if b.get("name") and not win.get("name"):
@@ -468,6 +551,30 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     if float(a.get("confidence") or 0) >= float(b.get("confidence") or 0):
         return a
     return b
+
+
+def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[dict[str, Any]]:
+    """Keep real Disrof-class hits; drop a swarm of unnamed frost fragments."""
+    named: list[dict[str, Any]] = []
+    unnamed: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
+    for c in cities:
+        if c.get("tribe") != "vengir":
+            others.append(c)
+        elif c.get("name"):
+            named.append(c)
+        else:
+            unnamed.append(c)
+    def _score(c: dict[str, Any]) -> tuple:
+        ev = c.get("evidence") or []
+        return (
+            1 if "magenta_roof" in ev else 0,
+            1 if "gold_lamps" in ev else 0,
+            float(c.get("confidence") or 0),
+            int(c.get("n") or 0),
+        )
+    unnamed.sort(key=_score, reverse=True)
+    return others + named + unnamed[:unnamed_limit]
 
 
 def _dedupe_cities(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
