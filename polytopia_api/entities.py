@@ -609,6 +609,21 @@ def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tup
     return x0, x1, y0, y1
 
 
+def _warm_bardur_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
+    """Bardur longhouse wood is warm grey. Cool mountain stone is not a city."""
+    x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size == 0:
+        return 0
+    n = 0
+    for py in range(crop.shape[0]):
+        for px in range(crop.shape[1]):
+            r, g, b = (int(v) for v in crop[py, px][:3])
+            if classify_tribe((r, g, b)) == "bardur" and r >= b - 4:
+                n += 1
+    return n
+
+
 def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[str, list[int]]:
     """Tribe of the building itself. Skip lime HP bars and water (garrison / port)."""
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
@@ -820,37 +835,35 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             rgb = col_rgb
             if not strong_vengir and col_tribe != "vengir":
                 continue
-        bardurish = (
+        wood = (
             sampled_tribe == "bardur"
             or col_tribe == "bardur"
             or classify_tribe(rgb) == "bardur"
-            or (marks and frost_plate and sampled_tribe != "vengir")
         )
-        # Magenta roof is enough. Gold lamps / plate windows only count on frost
-        # (Oumaji sand matches gold pixel-for-pixel and is not Disrof).
-        real_disrof = roof_n >= 8 or (
-            frost_plate and (gold_n >= 8 or plate_win_n >= 8)
+        # Magenta roof is enough. Huge building gold / plate-window *pairs* are
+        # Disrof. Modest gold on Bardur wood next to a nameplate star is the
+        # Ufla-class roof lamps (live T46: those must stay cities_own, not ghosts
+        # and not stolen as Vengir).
+        disrof_gold = frost_plate and (
+            plate_win_n >= 8
+            or gold_n >= 280
+            or (gold_n >= 8 and not (wood and marks))
         )
-        if real_disrof or (strong_vengir and not bardurish):
+        real_disrof = roof_n >= 8 or disrof_gold
+        if real_disrof or (strong_vengir and not wood):
             tribe = "vengir"
-        elif strong_vengir and bardurish:
+        elif strong_vengir and wood:
             tribe = "bardur"
         elif tribe == "vengir":
             # Purple noise without a magenta roof / lamps: grey Bardur wood stays own.
-            lum = (int(rgb[0]) + int(rgb[1]) + int(rgb[2])) / 3.0
-            chroma = max(int(rgb[0]), int(rgb[1]), int(rgb[2])) - min(
-                int(rgb[0]), int(rgb[1]), int(rgb[2])
-            )
-            if classify_tribe(rgb) == "bardur" or col_tribe == "bardur" or (
-                40 <= lum <= 145 and chroma <= 40
-            ):
+            # Mountain grey / frost+gold without wood used to become cities_own ghosts
+            # (live T46: 5–7 Bardur vs 2 on screen — c15_15 / c15_8 / c21_23).
+            if wood:
                 tribe = "bardur"
-            elif marks and frost_plate:
-                tribe = _own_tribe()
             else:
                 continue
         elif tribe == "oumaji" and frost_plate:
-            if classify_tribe(rgb) == "bardur" or col_tribe == "bardur":
+            if wood:
                 tribe = "bardur"
             else:
                 continue
@@ -860,6 +873,17 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         if tribe == "unknown":
             continue
         own = tribe == _own_tribe()
+        warm_n = 0
+        if own:
+            # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
+            # but a lettered full plate still counts when the star clustered onto a
+            # neighbor. Fruit-gold / cool mountain / tiny frost splits are ghosts.
+            warm_n = _warm_bardur_pixels(arr, cx, cy, bw, up)
+            lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
+            if not wood or warm_n < 30:
+                continue
+            if not marks and not lettered:
+                continue
         if not own and tribe == "oumaji":
             # Bright sand / yellow UI, not a Moonrise frost city.
             continue
@@ -888,6 +912,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             evidence.append("gold_lamps")
         if marks and "gold_lamps" not in evidence:
             evidence.append("gold_star")
+        if own and warm_n >= 30:
+            evidence.append("bardur_wood")
         building_y = max(0, cy - up // 2)
         frame = (w, h)
         tile_xy = combat.city_tile_center(
@@ -1039,10 +1065,38 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     return b
 
 
-def _keep_sticky_city(c: dict[str, Any]) -> bool:
-    """Unnamed frost FPs must not accumulate across observes (2→4→7)."""
-    if c.get("owner") == "own":
+def _is_real_own_hit(c: dict[str, Any]) -> bool:
+    """Ufla-class Bardur: frost plate + gold star (or roof lamps). Bare frost is a ghost.
+
+    Live T46 Game Stats: Bardur 2 cities; observe listed 5–7 unnamed phantoms.
+    """
+    if c.get("owner") != "own":
+        return False
+    name = str(c.get("name") or "").strip()
+    if len(name) >= 4:
         return True
+    ev = c.get("evidence") or []
+    # Gold star / roof lamps. A full lettered Bardur plate whose star clustered
+    # onto a neighbor still counts (adjacent 1-hex cities). Tiny frost splits do not.
+    if "gold_star" in ev or "gold_lamps" in ev:
+        return True
+    return (
+        "frost_plate" in ev
+        and "bardur_wood" in ev
+        and int(c.get("n") or 0) >= 900
+        and int(c.get("w") or 0) >= 52
+    )
+
+
+def _keep_sticky_city(c: dict[str, Any]) -> bool:
+    """Unnamed frost FPs must not accumulate across observes (2→4→7).
+
+    Own ghosts stuck the same way (T46: 5–7 vs 2 Bardur on screen). Real
+    Ufla-class plates reappear when they are on screen; city_id stays in
+    ``_CITY_INDEX`` so /recruit /move-to still resolve.
+    """
+    if c.get("owner") == "own":
+        return False
     if c.get("name"):
         return True
     if _is_disrof_hit(c):
@@ -1066,6 +1120,16 @@ def session_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # Live T44/T45: cities_own filled the old combined [:12] and cities_enemy went [].
 # Never slice enemy to make room for Bardur.
 MAX_CITIES_OWN = 24
+
+
+def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop unnamed / low-evidence own cities (c15_15, c15_8, c21_23)."""
+    out: list[dict[str, Any]] = []
+    for c in cities:
+        if c.get("owner") == "own" and not _is_real_own_hit(c):
+            continue
+        out.append(c)
+    return out
 
 
 def _drop_split_plate_own(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
@@ -1100,7 +1164,7 @@ def _drop_split_plate_own(cities: list[dict[str, Any]], dist: int = 56) -> list[
 
 def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every real enemy city. A 12-own map must not empty cities_enemy."""
-    cities = _cap_vengir(_drop_split_plate_own(_dedupe_cities(cities)))
+    cities = _cap_vengir(_drop_own_phantoms(_drop_split_plate_own(_dedupe_cities(cities))))
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     other = [c for c in cities if c.get("owner") not in {"own", "enemy"}]
