@@ -609,19 +609,39 @@ def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tup
     return x0, x1, y0, y1
 
 
-def _warm_bardur_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
-    """Bardur longhouse wood is warm grey. Cool mountain stone is not a city."""
+def _bardur_wood_stats(
+    arr: np.ndarray, cx: int, cy: int, bw: int, up: int
+) -> tuple[int, int, int, float]:
+    """Warm Bardur wood in the building column: (n, width, height, density).
+
+    A longhouse is a tall wood bbox (live moonrise can be sparse). A
+    unit-on-snow or mountain speck is short/sparse (c12_16 / c17_14).
+    """
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
     if crop.size == 0:
-        return 0
+        return 0, 0, 0, 0.0
+    xs: list[int] = []
+    ys: list[int] = []
     n = 0
     for py in range(crop.shape[0]):
         for px in range(crop.shape[1]):
             r, g, b = (int(v) for v in crop[py, px][:3])
             if classify_tribe((r, g, b)) == "bardur" and r >= b - 4:
                 n += 1
-    return n
+                xs.append(px)
+                ys.append(py)
+    if n == 0:
+        return 0, 0, 0, 0.0
+    ww = max(xs) - min(xs) + 1
+    wh = max(ys) - min(ys) + 1
+    dens = n / float(crop.shape[0] * crop.shape[1])
+    return n, ww, wh, dens
+
+
+def _warm_bardur_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
+    """Bardur longhouse wood is warm grey. Cool mountain stone is not a city."""
+    return _bardur_wood_stats(arr, cx, cy, bw, up)[0]
 
 
 def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[str, list[int]]:
@@ -874,16 +894,18 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         own = tribe == _own_tribe()
         warm_n = 0
+        wood_w = 0
+        wood_h = 0
+        wood_dens = 0.0
         if own:
             # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
             # but a lettered full plate still counts when the star clustered onto a
             # neighbor. Fruit-gold / cool mountain / tiny frost splits are ghosts.
-            warm_n = _warm_bardur_pixels(arr, cx, cy, bw, up)
+            warm_n, wood_w, wood_h, wood_dens = _bardur_wood_stats(arr, cx, cy, bw, up)
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
-            # Longhouse wood is thousands of pixels. Sparse mountain/forest
-            # next to a frost streak was the T46 mid-map phantom c12_16
-            # (warm_n≈345 vs Bufla/Orkork ≈1600+).
-            if not wood or warm_n < 500:
+            # #32's warm_n>=500 floor ate live Bufla/Orkork (cities_own 1→0).
+            # Synthetic longhouses are ~1600+; live moonrise wood is far sparser.
+            if not wood or warm_n < 30:
                 continue
             if not marks and not lettered:
                 continue
@@ -919,7 +941,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             evidence.append("gold_lamps")
         if marks and "gold_lamps" not in evidence:
             evidence.append("gold_star")
-        if own and warm_n >= 500:
+        if own and warm_n >= 30:
             evidence.append("bardur_wood")
         building_y = max(0, cy - up // 2)
         frame = (w, h)
@@ -952,6 +974,10 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "rgb": rgb,
                 "roof_n": roof_n,
                 "gold_n": gold_n,
+                "warm_n": warm_n,
+                "wood_w": wood_w,
+                "wood_h": wood_h,
+                "wood_dens": wood_dens,
             }
         )
     cities.sort(
@@ -964,12 +990,17 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
     return _finalize_cities(cities)
 
 
+# Live Orkork halves ~35px. Bufla+Orkork ~80px must stay two (#32 over-merged
+# when coords.frame() was 1920 → pitch 54 → 1.2*pitch≈65).
+OWN_SPLIT_MAX_PX = 48
+
+
 def _own_close_plate_px() -> int:
     """Same Bardur plate can hash two tiles just outside cluster-merge.
 
     Live T46 Orkork: c15_24 @(541,657) + c16_24 @(574,667) ≈35px (cluster
     merge is 32px @ 1280 so both survive). Neighbor cities sit ~80px; a
-    64px radius ate those.
+    64px radius ate those. Hard-cap below 80 even if frame() is 1920.
     """
     try:
         fw, fh = coords.frame()
@@ -978,7 +1009,7 @@ def _own_close_plate_px() -> int:
     if fw <= 0 or fh <= 0:
         fw, fh = 1280, 800
     pitch = combat.hex_pitch(fw, fh)
-    return max(38, int(round(pitch * 1.2)))
+    return max(36, min(OWN_SPLIT_MAX_PX, int(round(pitch * 1.2))))
 
 
 def _with_city_extras(win: dict[str, Any], lose: dict[str, Any]) -> dict[str, Any]:
@@ -1005,20 +1036,23 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
     One Disrof plate can split into a grey-stone (Bardur-looking) fragment and a
     gold/magenta hit. Those share a nameplate; distinct cities do not.
     """
+    oa, ob = a.get("owner"), b.get("owner")
     ta, tb = a.get("tile"), b.get("tile")
     if ta is not None and tb is not None and ta == tb:
         return 10**6
+    if oa == "own" and ob == "own" and _city_sep2(a, b) > OWN_SPLIT_MAX_PX * OWN_SPLIT_MAX_PX:
+        # Live T46 after #32: Bufla+Orkork ~80px became one city then 0.
+        # Same-tile splits still merge above; 1-hex neighbors never do.
+        return 0
     if _plates_overlap(a, b):
         return 10**6
-    oa, ob = a.get("owner"), b.get("owner")
     if oa and ob and oa != ob:
         # Same hex / overlapping nameplate already merged above (grey-stone
         # half of Disrof). A 64px radius ate nearby Bardur (live: cities_own=2).
         return 0
     if oa == "own" and ob == "own":
         # Same city can hash two tiles ~1 pitch apart (live Orkork c15_24 +
-        # c16_24 at ~35px). True 1-hex neighbors sit ~80px — a 64px radius
-        # ate those. Merge only the close-plate / same-hex split.
+        # c16_24 at ~35px). True 1-hex neighbors sit ~80px.
         return _own_close_plate_px()
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
@@ -1064,6 +1098,24 @@ def _is_disrof_hit(c: dict[str, Any]) -> bool:
     return c.get("tribe") == "vengir" and ("magenta_roof" in ev or "gold_lamps" in ev)
 
 
+def _city_sep2(a: dict[str, Any], b: dict[str, Any]) -> int:
+    """Squared pixel distance; own plates also compare plate_y (banner centroid)."""
+    try:
+        dx = int(a["x"]) - int(b["x"])
+        dy = int(a["y"]) - int(b["y"])
+    except (KeyError, TypeError, ValueError):
+        return 10**9
+    best = dx * dx + dy * dy
+    pa, pb = a.get("plate_y"), b.get("plate_y")
+    if pa is not None and pb is not None:
+        try:
+            dpy = int(pa) - int(pb)
+            best = min(best, dx * dx + dpy * dpy)
+        except (TypeError, ValueError):
+            pass
+    return best
+
+
 def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     # Same nameplate: gold/magenta Disrof wins over the grey-stone half.
     # Distinct hexes with different owners never reach here unless plates overlap.
@@ -1100,9 +1152,18 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
             win["name"] = a["name"]
         return win
     if a.get("owner") == "own" and b.get("owner") == "own":
-        if int(a.get("n") or 0) != int(b.get("n") or 0):
-            win, lose = (a, b) if int(a.get("n") or 0) > int(b.get("n") or 0) else (b, a)
-            return _with_city_extras(win, lose)
+        def _own_score(c: dict[str, Any]) -> tuple:
+            ev = c.get("evidence") or []
+            return (
+                int(c.get("warm_n") or 0),
+                int(c.get("n") or 0),
+                int(c.get("wood_h") or 0),
+                int(c.get("w") or 0),
+                1 if "gold_star" in ev or "gold_lamps" in ev else 0,
+            )
+
+        win, lose = (a, b) if _own_score(a) >= _own_score(b) else (b, a)
+        return _with_city_extras(win, lose)
     if a.get("name") and not b.get("name"):
         return _with_city_extras(a, b)
     if b.get("name") and not a.get("name"):
@@ -1156,33 +1217,54 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
     return False
 
 
+def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
+    """Drop unit-on-snow / mountain specks; keep live longhouses with sparse wood.
+
+    #32 required dens≥0.45×tall (and warm_n≥500). Live Bufla/Orkork failed that
+    (cities_own 1→0). Keep unless the wood bbox is short *and* sparse.
+    Dict fixtures omit wood_* — treat those as already-vetted cities.
+    """
+    if c.get("wood_h") is None and c.get("wood_dens") is None:
+        return True
+    wh = int(c.get("wood_h") or 0)
+    dens = float(c.get("wood_dens") or 0)
+    # Unit frost ~31×0.31; mountain speck ~23×0.17; scaled longhouse ~40×0.55.
+    if wh < 34 and dens < 0.38:
+        return False
+    if wh < 26:
+        return False
+    return True
+
+
 def _is_real_own_hit(c: dict[str, Any]) -> bool:
     """Ufla-class Bardur: frost plate + gold star (or roof lamps). Bare frost is a ghost.
 
-    Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). Observe listed
-    5–7 unnamed phantoms, then 4 after HUD drop (Orkork split + mid-map
-    c12_16). Sparse-wood frost plates are dropped in find_cities.
+    Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). #32's warm_n>=500
+    floor left cities_own 1→0. Close-plate merge is capped at 48px so ~80px
+    neighbors stay two. Short/sparse wood (c12_16 / c17_14) still drops.
     """
     if c.get("owner") != "own":
         return False
     if _own_hit_in_top_chrome(c):
         return False
-    if c.get("warm_n") is not None and int(c.get("warm_n") or 0) < 500:
+    if c.get("warm_n") is not None and int(c.get("warm_n") or 0) < 30:
         return False
     name = str(c.get("name") or "").strip()
-    if len(name) >= 4:
-        return True
     ev = c.get("evidence") or []
+    if len(name) >= 4:
+        return _own_wood_looks_like_building(c)
     # Gold star / roof lamps. A full lettered Bardur plate whose star clustered
     # onto a neighbor still counts (adjacent 1-hex cities). Tiny frost splits do not.
     if "gold_star" in ev or "gold_lamps" in ev:
-        return True
-    return (
+        return _own_wood_looks_like_building(c)
+    if (
         "frost_plate" in ev
         and "bardur_wood" in ev
         and int(c.get("n") or 0) >= 900
         and int(c.get("w") or 0) >= 52
-    )
+    ):
+        return _own_wood_looks_like_building(c)
+    return False
 
 
 def _keep_sticky_city(c: dict[str, Any]) -> bool:
@@ -1220,7 +1302,7 @@ MAX_CITIES_OWN = 24
 
 
 def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop unnamed / low-evidence / HUD-fog own cities (c15_15, c18_1)."""
+    """Drop unnamed / low-evidence / HUD-fog / unit-sized own cities (c12_16, c17_14)."""
     out: list[dict[str, Any]] = []
     for c in cities:
         if c.get("owner") == "own" and not _is_real_own_hit(c):
@@ -1317,7 +1399,11 @@ def _dedupe_cities(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[st
             hit = None
             best_d = 10**9
             for i, o in enumerate(out):
-                d2 = (int(c["x"]) - int(o["x"])) ** 2 + (int(c["y"]) - int(o["y"])) ** 2
+                oa, ob = c.get("owner"), o.get("owner")
+                if oa == "own" and ob == "own":
+                    d2 = _city_sep2(c, o)
+                else:
+                    d2 = (int(c["x"]) - int(o["x"])) ** 2 + (int(c["y"]) - int(o["y"])) ** 2
                 lim = _city_merge_limit(c, o, dist)
                 if d2 <= lim * lim and d2 < best_d:
                     best_d = d2
