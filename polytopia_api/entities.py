@@ -609,32 +609,76 @@ def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tup
     return x0, x1, y0, y1
 
 
+def _is_magenta_roof_mask(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
+    purple = (r + b) / 2.0 - g
+    return (
+        (g <= 95)
+        & (np.maximum(r, b) >= 36)
+        & (np.maximum(np.maximum(r, g), b) <= 190)
+        & (np.minimum(r, b) >= 20)
+        & (purple >= 16)
+        & ((np.maximum(r, b) - g) >= 20)
+        & (np.abs(r - b) <= 60)
+    )
+
+
+def _bardur_building_mask(crop: np.ndarray) -> np.ndarray:
+    """Warm Bardur longhouse pixels, including wine-shadow grey-brown.
+
+    ``classify_tribe`` labels wine-shadow (88,70,82) as Vengir first, which
+    starved live Bufla/Orkork wood counts. Cool mountain (b > r) and magenta
+    roofs stay out.
+    """
+    if crop.size == 0:
+        return np.zeros((0, 0), dtype=bool)
+    r = crop[:, :, 0].astype(np.int32)
+    g = crop[:, :, 1].astype(np.int32)
+    b = crop[:, :, 2].astype(np.int32)
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    bardur = (
+        (mx >= 55)
+        & (mx <= 145)
+        & (mn >= 50)
+        & (np.abs(r - g) <= 25)
+        & (np.abs(g - b) <= 30)
+        & (np.abs(r - b) <= 30)
+        & (g <= r + 15)
+        & (r >= b - 4)
+    )
+    wine = (
+        (mx >= 55)
+        & (mx <= 145)
+        & (mn >= 48)
+        & ((mx - mn) <= 40)
+        & (g <= 95)
+        & (r >= b - 8)
+        & ((np.maximum(r, b) - g) < 20)
+        & (~_is_magenta_roof_mask(r, g, b))
+    )
+    return bardur | wine
+
+
 def _bardur_wood_stats(
     arr: np.ndarray, cx: int, cy: int, bw: int, up: int
 ) -> tuple[int, int, int, float]:
     """Warm Bardur wood in the building column: (n, width, height, density).
 
     A longhouse is a tall wood bbox (live moonrise can be sparse). A
-    unit-on-snow or mountain speck is short/sparse (c12_16 / c17_14).
+    unit-on-snow or mountain speck is short/sparse; a frost streak is
+    tall-sparse (live T46 c17_14 after #33).
     """
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
     if crop.size == 0:
         return 0, 0, 0, 0.0
-    xs: list[int] = []
-    ys: list[int] = []
-    n = 0
-    for py in range(crop.shape[0]):
-        for px in range(crop.shape[1]):
-            r, g, b = (int(v) for v in crop[py, px][:3])
-            if classify_tribe((r, g, b)) == "bardur" and r >= b - 4:
-                n += 1
-                xs.append(px)
-                ys.append(py)
+    mask = _bardur_building_mask(crop)
+    n = int(mask.sum())
     if n == 0:
         return 0, 0, 0, 0.0
-    ww = max(xs) - min(xs) + 1
-    wh = max(ys) - min(ys) + 1
+    ys, xs = np.where(mask)
+    ww = int(xs.max() - xs.min()) + 1
+    wh = int(ys.max() - ys.min()) + 1
     dens = n / float(crop.shape[0] * crop.shape[1])
     return n, ww, wh, dens
 
@@ -652,6 +696,7 @@ def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[
     if crop.size == 0:
         return classify_tribe(rgb), rgb
     lime = _hp_green_mask(crop)
+    wood = _bardur_building_mask(crop)
     votes: dict[str, int] = {}
     for py in range(crop.shape[0]):
         for px in range(crop.shape[1]):
@@ -661,6 +706,9 @@ def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[
             if is_water_rgb(*pix):
                 continue
             t = classify_tribe(pix)
+            # Wine-shadow wood classifies as Vengir first; it is still Bardur.
+            if wood[py, px]:
+                t = "bardur"
             if t != "unknown":
                 votes[t] = votes.get(t, 0) + 1
     if not votes:
@@ -1218,20 +1266,31 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
 
 
 def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
-    """Drop unit-on-snow / mountain specks; keep live longhouses with sparse wood.
+    """Drop unit-on-snow / tall-sparse frost; keep live longhouses with modest wood.
 
     #32 required dens≥0.45×tall (and warm_n≥500). Live Bufla/Orkork failed that
-    (cities_own 1→0). Keep unless the wood bbox is short *and* sparse.
+    (cities_own 1→0). #33 dropped only short∧sparse, so tall-sparse c17_14
+    survived (cities_own=3 vs Game Stats 2). Keep modest-density plates
+    (dens≈0.32–0.38, ww≳36); drop short, sparse, or skinny frost columns.
     Dict fixtures omit wood_* — treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
         return True
     wh = int(c.get("wood_h") or 0)
+    ww = int(c.get("wood_w") or 0)
     dens = float(c.get("wood_dens") or 0)
-    # Unit frost ~31×0.31; mountain speck ~23×0.17; scaled longhouse ~40×0.55.
+    if wh < 26:
+        return False
+    # Tall-sparse frost streak (live c17_14 after #33: ~18×52, dens≈0.19).
+    if dens < 0.28:
+        return False
+    # Short-sparse unit frost (c12_16 ~31×0.31).
     if wh < 34 and dens < 0.38:
         return False
-    if wh < 26:
+    # Skinny column is a unit/mountain streak, not a longhouse (ww≳36).
+    if ww and ww < 22:
+        return False
+    if ww and ww < 24 and dens < 0.36:
         return False
     return True
 
@@ -1239,9 +1298,9 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
 def _is_real_own_hit(c: dict[str, Any]) -> bool:
     """Ufla-class Bardur: frost plate + gold star (or roof lamps). Bare frost is a ghost.
 
-    Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). #32's warm_n>=500
-    floor left cities_own 1→0. Close-plate merge is capped at 48px so ~80px
-    neighbors stay two. Short/sparse wood (c12_16 / c17_14) still drops.
+    Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). Close-plate merge
+    is capped at 48px so ~80px neighbors stay two. Short/sparse *and*
+    tall-sparse wood (c12_16 / c17_14) drop. Wine-shadow wood still counts.
     """
     if c.get("owner") != "own":
         return False
@@ -1254,8 +1313,11 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
     if len(name) >= 4:
         return _own_wood_looks_like_building(c)
     # Gold star / roof lamps. A full lettered Bardur plate whose star clustered
-    # onto a neighbor still counts (adjacent 1-hex cities). Tiny frost splits do not.
+    # onto a neighbor still counts (adjacent 1-hex cities). Tiny frost splits
+    # and gold-lamp holes between ~80px neighbors (no frost_plate) do not.
     if "gold_star" in ev or "gold_lamps" in ev:
+        if "frost_plate" not in ev and int(c.get("n") or 0) < 400:
+            return False
         return _own_wood_looks_like_building(c)
     if (
         "frost_plate" in ev

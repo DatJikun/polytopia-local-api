@@ -2038,7 +2038,8 @@ def test_two_bardur_dedupe_close_plates_drop_mid_phantoms():
         "name": None, "confidence": 0.72,
         "evidence": ["frost_plate", "gold_star", "bardur_wood"],
         "x": 610, "y": 379, "plate_y": 400, "tile": [17, 14], "n": 893, "w": 59,
-        "warm_n": 575, "wood_w": 25, "wood_h": 23, "wood_dens": 0.17, "seen": True,
+        # Live after #33: tall-sparse (not the short∧sparse gate).
+        "warm_n": 620, "wood_w": 18, "wood_h": 52, "wood_dens": 0.19, "seen": True,
     }
     enemy_hits = [
         _enemy_city("c27_9", [27, 9], 978, 243),
@@ -2180,6 +2181,62 @@ def test_own_modest_warm_n_longhouses_are_not_dropped() -> None:
     assert len(out) == 1
     assert out[0]["id"] == "c10_22"
 
+
+def test_tall_sparse_c17_14_drops_neighbors_stay_two() -> None:
+    """Live 36e1983: cities_own=3 vs Game Stats 2. Tall-sparse frost c17_14
+    passed #33's short∧sparse gate (wh≥34). Bufla+Orkork ~80px stay two.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import _is_real_own_hit, observe_map, session_cities
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    # Same-y 80px pair (proven two own); phantom far enough not to kiss plates.
+    _draw_bardur_city(d, 400, 300)
+    _draw_bardur_city(d, 480, 300)
+    # Tall thin frost column + gold star — live c17_14 after #33.
+    d.rectangle((720 - 8, 500 - 78, 720 + 8, 500 - 8), fill=(90, 85, 80))
+    d.rectangle((720 - 36, 500 - 6, 720 + 36, 500 + 10), fill=(180, 180, 178))
+    d.ellipse((720 + 18, 500 - 4, 720 + 32, 500 + 8), fill=(224, 188, 63))
+    d.rectangle((720 - 28, 500 - 2, 720 - 22, 500 + 6), fill=(40, 40, 40))
+    _draw_disrof_city(d, 980, 260)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    assert len(own) == 2, mapped["cities"]
+    xs = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 400) < 50 for x in xs), own
+    assert any(abs(x - 480) < 50 for x in xs), own
+    assert all(abs(int(c["x"]) - 720) > 40 or abs(int(c.get("plate_y") or c["y"]) - 500) > 40 for c in own), own
+    assert [c for c in mapped["cities_enemy"] if c.get("tribe") == "vengir"]
+
+    bufla = _own_city(11, y=500)
+    bufla["id"] = bufla["city_id"] = "c11_18"
+    bufla["tile"] = [11, 18]
+    bufla["x"], bufla["y"], bufla["plate_y"] = 400, 475, 500
+    bufla["w"], bufla["n"] = 90, 1400
+    bufla["warm_n"] = 200
+    bufla["wood_w"], bufla["wood_h"], bufla["wood_dens"] = 40, 38, 0.35
+    orkork = _own_city(13, y=530)
+    orkork["id"] = orkork["city_id"] = "c13_19"
+    orkork["tile"] = [13, 19]
+    orkork["x"], orkork["y"], orkork["plate_y"] = 480, 505, 530
+    orkork["w"], orkork["n"] = 90, 1300
+    orkork["warm_n"] = 180
+    orkork["wood_w"], orkork["wood_h"], orkork["wood_dens"] = 38, 36, 0.32
+    phantom = {
+        "id": "c17_14", "city_id": "c17_14", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 610, "y": 379, "plate_y": 400, "tile": [17, 14], "n": 900, "w": 59,
+        "warm_n": 620, "wood_w": 18, "wood_h": 52, "wood_dens": 0.19, "seen": True,
+    }
+    assert not _is_real_own_hit(phantom)
+    out = session_cities([bufla, orkork, phantom])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert own_ids == {"c11_18", "c13_19"}, out
+    assert "c17_14" not in own_ids
 
 
 def test_two_bardur_match_screen_not_frost_phantoms():
@@ -4829,6 +4886,7 @@ if __name__ == "__main__":
     test_own_close_plates_merge_adjacent_stay_two()
     test_own_neighbors_stay_two_even_if_frame_is_1920()
     test_own_modest_warm_n_longhouses_are_not_dropped()
+    test_tall_sparse_c17_14_drops_neighbors_stay_two()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
