@@ -573,7 +573,7 @@ def test_bardur_own_not_eaten_by_vengir_frost():
     mapped = observe_map(as_rgb(im))
     own = mapped["cities_own"]
     enemy = mapped["cities_enemy"]
-    assert len(own) >= 3, mapped["cities"]
+    assert len(own) == 3, mapped["cities"]
     assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
     vengir = [c for c in enemy if c.get("tribe") == "vengir"]
     assert 1 <= len(vengir) <= 2, vengir
@@ -649,7 +649,7 @@ def test_m20_bardur_own_and_one_disrof():
     mapped = observe_map(arr)
     own = mapped["cities_own"]
     enemy = mapped["cities_enemy"]
-    assert len(own) >= 3, own
+    assert len(own) == 3, own
     assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
     assert all(c.get("city_id") == c.get("id") and str(c["id"]).startswith("c") for c in mapped["cities"]), mapped["cities"]
     xs_own = sorted(int(c["x"]) for c in own)
@@ -700,7 +700,7 @@ def test_frost_plate_gold_windows_stay_enemy_not_own():
     mapped = observe_map(as_rgb(im))
     own = mapped["cities_own"]
     enemy = mapped["cities_enemy"]
-    assert len(own) >= 3, mapped["cities"]
+    assert len(own) == 3, mapped["cities"]
     assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
     assert all(c.get("city_id") == c.get("id") for c in mapped["cities"]), mapped["cities"]
     xs_own = [int(c["x"]) for c in own]
@@ -1821,6 +1821,72 @@ def test_bardur_wood_shadow_stays_own():
     assert all(c["owner"] == "enemy" for c in vengir)
 
 
+def test_two_bardur_match_screen_not_frost_phantoms():
+    """Live T46: Game Stats Bardur 2; observe listed 5–7 (c15_15, c15_8, c21_23)."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 400, 280)
+    _draw_bardur_city(d, 720, 420)
+    # Unnamed frost fragments (the ghosts).
+    for x0, y0 in ((90, 160), (520, 150), (980, 180), (240, 520), (1080, 560)):
+        d.rectangle((x0, y0, x0 + 100, y0 + 20), fill=(180, 180, 178))
+        d.rectangle((x0 + 12, y0 + 6, x0 + 18, y0 + 14), fill=(40, 40, 40))
+    # Fruit-gold on a frost streak — used to count as a gold-star city.
+    d.ellipse((530, 128, 548, 146), fill=(224, 188, 63))
+    # Cool mountain grey + frost + gold (not Bardur wood).
+    d.rectangle((960, 340, 1020, 400), fill=(110, 112, 118))
+    d.rectangle((940, 408, 1044, 428), fill=(180, 180, 178))
+    d.ellipse((1020, 410, 1036, 426), fill=(224, 188, 63))
+    d.rectangle((952, 414, 958, 424), fill=(40, 40, 40))
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    assert all(
+        "gold_star" in (c.get("evidence") or []) or "gold_lamps" in (c.get("evidence") or [])
+        for c in own
+    ), own
+    xs = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 400) < 40 for x in xs), own
+    assert any(abs(x - 720) < 40 for x in xs), own
+
+
+def test_own_phantoms_do_not_accumulate_across_frames():
+    """Sticky keep_missing used to grow cities_own 2→5–7 after frost FPs."""
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    real_a = _own_city(7, y=300)
+    real_a["id"] = real_a["city_id"] = "c7_16"
+    real_a["tile"] = [7, 16]
+    real_b = _own_city(12, y=420)
+    real_b["id"] = real_b["city_id"] = "c12_16"
+    real_b["tile"] = [12, 16]
+    ghosts = []
+    for cid, tile, x, y in (
+        ("c15_15", [15, 15], 200, 160),
+        ("c15_8", [15, 8], 640, 200),
+        ("c21_23", [21, 23], 980, 520),
+    ):
+        ghosts.append({
+            "id": cid, "city_id": cid, "tribe": "bardur", "owner": "own",
+            "name": None, "confidence": 0.72, "evidence": ["frost_plate"],
+            "x": x, "y": y, "tile": tile, "n": 40, "w": 36, "seen": True,
+        })
+    prev = [real_a, real_b, *ghosts]
+    nxt = [dict(real_a, x=real_a["x"] + 1), dict(real_b, x=real_b["x"] + 1)]
+    out = session_cities(stabilize(nxt, prev, keep_missing=True))
+    own = [c for c in out if c.get("owner") == "own"]
+    ids = {c["id"] for c in own}
+    assert ids == {"c7_16", "c12_16"}, own
+    assert "c15_15" not in ids and "c15_8" not in ids and "c21_23" not in ids
+
+
 def test_recruit_timeout_skips_full_observe():
     """Live: /recruit hung on HUD OCR after every nameplate click."""
     from unittest.mock import patch
@@ -2124,7 +2190,7 @@ def test_adjacent_bardur_cities_stay_two_own():
     _draw_bardur_city(d, 480, 300)
     mapped = observe_map(as_rgb(im))
     own = mapped["cities_own"]
-    assert len(own) >= 2, mapped["cities"]
+    assert len(own) == 2, mapped["cities"]
     xs = sorted(int(c["x"]) for c in own)
     assert any(abs(x - 400) < 40 for x in xs), own
     assert any(abs(x - 480) < 40 for x in xs), own
@@ -4281,6 +4347,8 @@ if __name__ == "__main__":
     test_nearby_bardur_not_eaten_by_disrof()
     test_crowded_bardur_own_and_vengir_enemy()
     test_bardur_wood_shadow_stays_own()
+    test_two_bardur_match_screen_not_frost_phantoms()
+    test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
     test_recruit_clicks_city_foot_when_plate_misses_train()
