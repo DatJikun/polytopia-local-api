@@ -215,10 +215,13 @@ def find_doit_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_capture_panel_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
-    """Capture lives in UNIT_CROP (bottom-left panel), not on the map."""
+    """Capture lives in UNIT_CROP (bottom-left panel), not on the map.
+
+    x1 is UNIT_CROP (0.48), not 0.52 — at 1280 GAME_STATS (x≈625) sits in that gap.
+    """
     h, w = arr.shape[:2]
     y0, y1 = int(h * 0.78), h
-    x0, x1 = 0, int(w * 0.52)
+    x0, x1 = 0, int(w * 0.48)
     region = arr[y0:y1, x0:x1]
     if region.size == 0:
         return []
@@ -236,10 +239,14 @@ def find_capture_panel_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_train_panel_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
-    """TRAIN is in UNIT_CROP. City-panel TRAIN is often brand-blue (same as Capture)."""
+    """TRAIN is in UNIT_CROP. City-panel TRAIN is often brand-blue (same as Capture).
+
+    Stop at 0.48*w (UNIT_CROP). 0.52*w included GAME_STATS at 1280 and opened
+    the Game Stats overlay instead of TRAIN.
+    """
     h, w = arr.shape[:2]
     y0, y1 = int(h * 0.78), h
-    x0, x1 = 0, int(w * 0.52)
+    x0, x1 = 0, int(w * 0.48)
     region = arr[y0:y1, x0:x1]
     if region.size == 0:
         return []

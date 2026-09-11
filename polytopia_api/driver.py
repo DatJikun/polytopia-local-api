@@ -651,12 +651,15 @@ def parse_hud(text: str) -> dict[str, Any]:
             if rest[0] <= 200:
                 turn = rest[0]
 
+    low = (text or "").lower()
+    game_stats = "game mode" in low or "game stats" in low
     return {
         "raw": text,
         "score": score,
         "stars": stars,
         "income": income,
         "turn": turn,
+        "game_stats": game_stats,
     }
 
 
@@ -676,6 +679,7 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
     disband = "disband" in low
     village = "village" in low
     settings = "settings" in low
+    game_stats = "game mode" in low or "game stats" in low
     capture_soon = any(
         s in low
         for s in (
@@ -715,7 +719,8 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
         "train": train and not disband,
         "disband": disband,
         "village": village,
-        "settings": settings,
+        "settings": settings or game_stats,
+        "game_stats": game_stats,
         "capture": capture,
         "capture_soon": capture_soon,
     }

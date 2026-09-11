@@ -49,6 +49,10 @@ _DOCK_DELTA = {
     "TECH_TREE": (-88, -8),
 }
 DOCK_MIN_SEP = 64
+# GAME_STATS / SETTINGS sit left of the 0.52*w dock rect at 1280 (x≈625 / 534)
+# and were clustered as TRAIN. Hit them by proximity, not a wider rectangle
+# that would eat UNIT_CROP.
+DOCK_BUTTON_HIT_PX = 40
 
 
 def dock_buttons(end: tuple[int, int]) -> dict[str, tuple[int, int]]:
@@ -75,12 +79,24 @@ def too_close_to_end_turn(name: str, pt: tuple[int, int] | None = None) -> bool:
 
 
 def in_dock_zone(x: int, y: int) -> bool:
-    """Bottom-right chrome including End Turn. Raw map clicks must not land here."""
+    """Bottom-right chrome including End Turn. Raw map clicks must not land here.
+
+    GAME_STATS / SETTINGS are left of the 0.52*w rect at 1280 — still dock.
+    """
     w, h = frame()
     if y >= int(h * 0.88) and x >= int(w * 0.52):
         return True
     end = point("END_TURN")
-    return (int(x) - end[0]) ** 2 + (int(y) - end[1]) ** 2 < 56 ** 2
+    if (int(x) - end[0]) ** 2 + (int(y) - end[1]) ** 2 < 56 ** 2:
+        return True
+    for name in ("SETTINGS", "GAME_STATS", "TECH_TREE"):
+        try:
+            dx, dy = point(name)
+        except Exception:
+            continue
+        if (int(x) - int(dx)) ** 2 + (int(y) - int(dy)) ** 2 < DOCK_BUTTON_HIT_PX ** 2:
+            return True
+    return False
 
 
 def dock_zone() -> dict[str, Any]:

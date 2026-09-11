@@ -98,7 +98,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_recruit",
-        "description": "Select own city_id (roof/nameplate, not unit foot) so TRAIN appears, then click the UNIT_CROP TRAIN/confirm pill — never Disband or Tech. Marks observe under 8s. Radial unit portraits still need a map click.",
+        "description": "Select own city_id (roof/nameplate, not unit foot) so TRAIN appears, then click the UNIT_CROP TRAIN/confirm pill — never Disband, Tech, or GAME_STATS. Marks observe under 8s. Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {
