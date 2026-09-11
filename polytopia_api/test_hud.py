@@ -1821,6 +1821,54 @@ def test_bardur_wood_shadow_stays_own():
     assert all(c["owner"] == "enemy" for c in vengir)
 
 
+def test_three_bardur_not_hud_fog_c18_1():
+    """Live T46 after PR #30: cities_own=4 vs ~3 on screen. c18_1 @ y≈45 is HUD frost."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map, session_cities
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    # Orkork / Bufla / Grugri — the three visible Bardur cities.
+    _draw_bardur_city(d, 280, 280)
+    _draw_bardur_city(d, 520, 420)
+    _draw_bardur_city(d, 760, 560)
+    # HUD stars + frost chrome at the top edge (hashed as c18_1 / gy=1).
+    _draw_bardur_city(d, 648, 64)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    assert len(own) == 3, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    assert all(int(c.get("y") or 0) > 96 for c in own), own
+    assert all(int((c.get("tile") or [0, 99])[1]) > 1 for c in own), own
+    xs = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 280) < 40 for x in xs), own
+    assert any(abs(x - 520) < 40 for x in xs), own
+    assert any(abs(x - 760) < 40 for x in xs), own
+
+    real = _own_city(7, y=300)
+    real["id"] = real["city_id"] = "c7_16"
+    real["tile"] = [7, 16]
+    real_b = _own_city(12, y=420)
+    real_b["id"] = real_b["city_id"] = "c12_16"
+    real_b["tile"] = [12, 16]
+    real_c = _own_city(16, y=560)
+    real_c["id"] = real_c["city_id"] = "c16_24"
+    real_c["tile"] = [16, 24]
+    ghost = {
+        "id": "c18_1", "city_id": "c18_1", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 648, "y": 45, "plate_y": 64, "tile": [18, 1], "n": 400, "w": 90,
+        "seen": True,
+    }
+    out = session_cities([real, real_b, real_c, ghost])
+    ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert ids == {"c7_16", "c12_16", "c16_24"}, out
+    assert "c18_1" not in ids
+
+
 def test_two_bardur_match_screen_not_frost_phantoms():
     """Live T46: Game Stats Bardur 2; observe listed 5–7 (c15_15, c15_8, c21_23)."""
     from polytopia_api.detect import as_rgb
@@ -4462,6 +4510,7 @@ if __name__ == "__main__":
     test_crowded_bardur_own_and_vengir_enemy()
     test_bardur_wood_shadow_stays_own()
     test_two_bardur_match_screen_not_frost_phantoms()
+    test_three_bardur_not_hud_fog_c18_1()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
