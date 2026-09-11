@@ -1571,6 +1571,14 @@ def test_dark_magenta_roof_classifies_vengir():
     # T44 dark-tile roof — used to miss min(r,b) >= 40.
     assert classify_tribe((36, 20, 48)) == "vengir"
     assert classify_tribe((90, 85, 80)) == "bardur"
+    from polytopia_api.entities import _is_magenta_roof_rgb
+    assert _is_magenta_roof_rgb(150, 74, 144)
+    assert _is_magenta_roof_rgb(70, 35, 80)
+    assert _is_magenta_roof_rgb(36, 20, 48)
+    assert _is_magenta_roof_rgb(48, 36, 58)  # garrison covering the roof
+    # Wine-shadow on Bardur wood — used to count as magenta_roof (T46 undercount).
+    assert not _is_magenta_roof_rgb(88, 70, 82)
+    assert not _is_magenta_roof_rgb(82, 68, 80)
 
 
 def _own_city(i: int, y: int = 200) -> dict:
@@ -1770,6 +1778,36 @@ def test_crowded_bardur_own_and_vengir_enemy():
     assert all(c["owner"] == "enemy" for c in vengir)
 
 
+def test_bardur_wood_shadow_stays_own():
+    """Live T46: wine-shadow on Bardur wood labeled many own cities as Vengir."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    own_pts = [
+        (140, 170), (300, 170), (460, 170), (620, 170),
+        (140, 340), (300, 340), (460, 340), (620, 340),
+        (140, 510), (300, 510), (460, 510),
+    ]
+    for cx, py in own_pts:
+        _draw_bardur_city(d, cx, py)
+        d.rectangle((cx - 18, py - 70, cx - 6, py - 40), fill=(88, 70, 82))
+        d.rectangle((cx + 8, py - 64, cx + 18, py - 36), fill=(82, 68, 80))
+    _draw_disrof_city(d, 1040, 220)
+    _draw_disrof_city(d, 1160, 400)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 8, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 2, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+
+
 def test_recruit_timeout_skips_full_observe():
     """Live: /recruit hung on HUD OCR after every nameplate click."""
     from unittest.mock import patch
@@ -1889,13 +1927,13 @@ def test_recruit_clicks_city_foot_when_plate_misses_train():
         "owner": "own",
     }
     register_cities([city])
-    clicks: list[tuple[int, int, str]] = []
+    clicks: list[tuple[int, int]] = []
     n_obs = {"n": 0}
 
     def fake_observe(*args, **kwargs):
         n_obs["n"] += 1
-        # First clicks are plate/building/below; TRAIN appears after roof/foot.
-        opened = n_obs["n"] >= 3
+        # Tile/foot is first; TRAIN appears on that click (not after 3 plate tries).
+        opened = n_obs["n"] >= 1
         return {
             "layout": {"frame": [1280, 800]},
             "overlay": {"train_blobs": [{"x": 184, "y": 740, "n": 200}] if opened else []},
@@ -1916,8 +1954,8 @@ def test_recruit_clicks_city_foot_when_plate_misses_train():
     assert r["ok"] is True, r
     assert (184, 740) in clicks
     wheres = [t.get("where") for t in (r.get("tried") or [])]
-    assert "plate" in wheres
-    assert any(w in {"tile", "city_foot", "building"} for w in wheres), r
+    assert wheres and wheres[0] in {"tile", "city_foot"}, r
+    assert "plate_below" not in wheres
     reset_obs()
 
 
@@ -2911,6 +2949,80 @@ def test_capture_opens_panel_when_already_on_city():
     reset_obs()
 
 
+def test_capture_after_stood_on_city_hp_bar_offset():
+    """Live T46: /move-to stood_on_city:true then /capture not_standing_on_city.
+
+    HP bar sits ~0.7 hex off the walk foot — tight 0.55 missed; STANDING_HEX 0.8 hits.
+    """
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c15_12",
+        "kind": "city",
+        "x": 201,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [15, 12],
+        "tile_xy": [201, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    blob = {"x": 180, "y": 740, "n": 200}
+    # ~0.61 hex east of the walk foot (plate_y-0.45*pitch ≈ 94).
+    occupant = {"id": "u36", "x": 223, "y": 94, "owner": "own"}
+    closed = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "units": [occupant],
+        "unit": {"capture": False, "train": False, "unit": None},
+        "ready": {},
+        "overlay": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    opened = {
+        **closed,
+        "unit": {"capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+        "overlay": {"capture_blobs": [blob]},
+    }
+    owned = {
+        **opened,
+        "cities_enemy": [],
+        "cities_own": [{**city, "owner": "own", "tribe": "bardur"}],
+        "cities": [{**city, "owner": "own", "tribe": "bardur"}],
+        "unit": {"capture": False},
+        "ready": {},
+    }
+    observes = [opened, owned]
+    with patch.object(commands, "remember", return_value=closed), patch.object(
+        commands, "observe", side_effect=lambda *a, **k: observes.pop(0)
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        cap = commands.capture(city_id="c15_12")
+    assert cap.get("reason") != "not_standing_on_city", cap
+    assert cap.get("stood_on_city") is True, cap
+    assert cap.get("ok") is True and cap.get("captured") is True, cap
+    assert clicks, clicks
+    reset_obs()
+
+
 def test_capture_soon_does_not_click_blindly():
     """Entering city this turn: panel says ready next turn — do not click Capture."""
     from unittest.mock import patch
@@ -3616,6 +3728,60 @@ def test_attack_retries_when_hp_stays():
     reset_obs()
 
 
+def test_attack_refuses_own_garrison():
+    """Live T46: city labeled enemy, garrison was Bardur own — hp_dropped:false poison."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c15_12",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [15, 12],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    own_on_tile = {"id": "u4", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "own"}
+    land = {"id": "u36", "x": 164, "y": 80, "owner": "own", "unit": "warrior"}
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [own_on_tile, land],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+        "attack_marks": [{"x": 203, "y": 83, "n": 40}],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+    }
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=before
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": before["unit"], "attack_marks": before["attack_marks"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.attack(from_id="u36", city_id="c15_12")
+    assert r["ok"] is False and r["reason"] == "own_garrison", r
+    assert r.get("hp_dropped") is False
+    assert clicks == []
+    reset_obs()
+
+
 def test_move_to_adjacent_empty_marks_clicks_city_foot():
     """Live T39: u3→c14_24 tile_dist≈0.94 / move_range=1 returned no_move_marks."""
     from unittest.mock import patch
@@ -3943,6 +4109,7 @@ if __name__ == "__main__":
     test_nearby_vengir_cities_do_not_merge()
     test_nearby_bardur_not_eaten_by_disrof()
     test_crowded_bardur_own_and_vengir_enemy()
+    test_bardur_wood_shadow_stays_own()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
     test_recruit_clicks_city_foot_when_plate_misses_train()
@@ -3968,6 +4135,7 @@ if __name__ == "__main__":
     test_move_to_from_mountain_unit_stands_on_city()
     test_capture_when_on_disrof_with_capture_flag()
     test_capture_opens_panel_when_already_on_city()
+    test_capture_after_stood_on_city_hp_bar_offset()
     test_capture_soon_does_not_click_blindly()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
@@ -3979,6 +4147,7 @@ if __name__ == "__main__":
     test_attack_clicks_city_foot_not_hp_bar()
     test_attack_waits_for_late_red_mark()
     test_attack_retries_when_hp_stays()
+    test_attack_refuses_own_garrison()
     test_move_to_adjacent_empty_marks_clicks_city_foot()
     test_move_to_waits_for_walk_then_stood_on_city()
     test_move_to_reselects_when_foot_click_stays_adjacent()
