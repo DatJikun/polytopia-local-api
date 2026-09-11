@@ -261,24 +261,40 @@ def _recruit_panel_block(obs: dict[str, Any] | None) -> str | None:
     """Wrong overlay for TRAIN — BACK these. A leftover unit *name* is not a block.
 
     Live: city panel OCR often reads a nearby warrior; treating that as ``unit``
-    dismissed the city and TRAIN never appeared.
+    dismissed the city and TRAIN never appeared. UNIT_CROP at 1280 also leaks
+    the dock "Settings" label while TRAIN is up — do not BACK that.
     """
     if _game_stats_open(obs):
         return "game_stats"
     panel = (obs or {}).get("unit") or {}
     raw = str(panel.get("raw") or "").lower()
-    if panel.get("settings") or "settings" in raw:
-        return "settings"
+    if (
+        panel.get("train")
+        or "choose a unit" in raw
+        or "choose unit" in raw
+        or _panel_train_blobs(obs)
+    ):
+        return None
     if panel.get("disband") or "disband" in raw:
         return "disband"
-    if "tech tree" in raw or "technology" in raw:
-        return "tech"
-    if panel.get("train"):
-        return None
-    if panel.get("can_move") or panel.get("no_actions"):
-        return "unit"
     if panel.get("capture"):
         return "capture"
+    if panel.get("settings") or "settings" in raw:
+        # Dock "Settings" OCR leak while the city TRAIN pill (often brand-blue)
+        # is already in UNIT_CROP. A real Settings overlay has no panel pill.
+        overlay = (obs or {}).get("overlay") or {}
+        frame = _frame(obs)
+        for b in list(overlay.get("capture_blobs") or []) + list(overlay.get("do_it_blobs") or []):
+            try:
+                if _in_unit_panel(int(b["x"]), int(b["y"]), frame):
+                    return None
+            except (KeyError, TypeError, ValueError):
+                continue
+        return "settings"
+    if "tech tree" in raw or "technology" in raw:
+        return "tech"
+    if panel.get("can_move") or panel.get("no_actions"):
+        return "unit"
     return None
 
 
@@ -2301,6 +2317,7 @@ def recruit(
         or _panel_train_blobs(last_obs)
     )
     clicked = _click(target[0], target[1], space="screen")
+    confirmed = True
     _sleep(0.28)
     after = last_obs or remember() or {}
     if _elapsed() < RECRUIT_BUDGET_S - 0.7:
