@@ -247,12 +247,24 @@ def _recruit_click_points(
     return points
 
 
+def _game_stats_open(obs: dict[str, Any] | None) -> bool:
+    """Game Stats overlay (hud → Game Mode: Domination). Not the TRAIN panel."""
+    hud = (obs or {}).get("hud") or {}
+    unit = (obs or {}).get("unit") or {}
+    if hud.get("game_stats") or unit.get("game_stats"):
+        return True
+    raw = f"{hud.get('raw') or ''} {unit.get('raw') or ''}".lower()
+    return "game mode" in raw or "game stats" in raw
+
+
 def _recruit_panel_block(obs: dict[str, Any] | None) -> str | None:
     """Wrong overlay for TRAIN — BACK these. A leftover unit *name* is not a block.
 
     Live: city panel OCR often reads a nearby warrior; treating that as ``unit``
     dismissed the city and TRAIN never appeared.
     """
+    if _game_stats_open(obs):
+        return "game_stats"
     panel = (obs or {}).get("unit") or {}
     raw = str(panel.get("raw") or "").lower()
     if panel.get("settings") or "settings" in raw:
@@ -271,7 +283,7 @@ def _recruit_panel_block(obs: dict[str, Any] | None) -> str | None:
 
 
 def _recruit_hard_block(reason: str | None) -> bool:
-    return reason in {"settings", "disband", "tech", "unit", "capture"}
+    return reason in {"settings", "disband", "tech", "unit", "capture", "game_stats"}
 
 
 def _dismiss_recruit_block(reason: str | None) -> None:
@@ -1433,8 +1445,11 @@ def _move_to(
 
 
 def _in_unit_panel(x: int, y: int, frame: tuple[int, int]) -> bool:
+    """Bottom-left UNIT_CROP. GAME_STATS at 1280 sits just right of 0.48*w."""
     w, h = frame
-    return int(y) >= int(h * 0.78) and int(x) <= int(w * 0.52)
+    if coords.in_dock_zone(int(x), int(y)):
+        return False
+    return int(y) >= int(h * 0.78) and int(x) <= int(w * 0.48)
 
 
 def _panel_capture_blobs(obs: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -2280,15 +2295,37 @@ def recruit(
             "opened": opened,
             "elapsed_s": _elapsed(),
         }
+    saw_train = bool(
+        ((last_obs or {}).get("unit") or {}).get("train")
+        or ((last_obs or {}).get("ready") or {}).get("train")
+        or _panel_train_blobs(last_obs)
+    )
     clicked = _click(target[0], target[1], space="screen")
     _sleep(0.28)
     after = last_obs or remember() or {}
     if _elapsed() < RECRUIT_BUDGET_S - 0.7:
         after = observe(mode="marks")
-    # Second pill only if TRAIN was replaced by a confirm (never Tech/Disband).
+    if _game_stats_open(after):
+        _dismiss_recruit_block("game_stats")
+        dismissed.append("game_stats")
+        return {
+            "ok": False,
+            "name": "recruit",
+            "reason": "game_stats overlay — TRAIN stays in UNIT_CROP, never GAME_STATS",
+            "city_id": ident,
+            "hit": hit,
+            "tried": tried,
+            "opened": opened,
+            "dismissed": dismissed,
+            "elapsed_s": _elapsed(),
+            "hud": after.get("hud"),
+            "unit": after.get("unit"),
+        }
+    # Second pill only if TRAIN was replaced by a confirm (never Tech/Disband/Game Stats).
     panel_after = after.get("unit") or {}
     if (
-        not panel_after.get("train")
+        saw_train
+        and not panel_after.get("train")
         and not _recruit_panel_block(after)
         and _elapsed() < RECRUIT_BUDGET_S - 0.4
     ):
@@ -2303,6 +2340,22 @@ def recruit(
             _sleep(0.22)
             if _elapsed() < RECRUIT_BUDGET_S - 0.5:
                 after = observe(mode="marks")
+            if _game_stats_open(after):
+                _dismiss_recruit_block("game_stats")
+                dismissed.append("game_stats")
+                return {
+                    "ok": False,
+                    "name": "recruit",
+                    "reason": "game_stats overlay — TRAIN stays in UNIT_CROP, never GAME_STATS",
+                    "city_id": ident,
+                    "hit": hit,
+                    "tried": tried,
+                    "opened": opened,
+                    "dismissed": dismissed,
+                    "elapsed_s": _elapsed(),
+                    "hud": after.get("hud"),
+                    "unit": after.get("unit"),
+                }
     return {
         "ok": True,
         "name": "recruit",
