@@ -666,7 +666,14 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
     no_actions = "no actions left" in low or ("next turn" in low and "no action" in low)
     harvest = "harvest" in low
     clear_forest = "clear forest" in low
-    train = "train" in low
+    # Tesseract often reads the pill as Traln / TRAN; "choose a unit" is the TRAIN panel.
+    train = (
+        "train" in low
+        or "traln" in low
+        or "choose a unit" in low
+        or "choose unit" in low
+    )
+    disband = "disband" in low
     village = "village" in low
     settings = "settings" in low
     capture_soon = any(
@@ -705,7 +712,8 @@ def parse_unit_panel(text: str) -> dict[str, Any]:
         "no_actions": no_actions,
         "harvest": harvest,
         "clear_forest": clear_forest,
-        "train": train,
+        "train": train and not disband,
+        "disband": disband,
         "village": village,
         "settings": settings,
         "capture": capture,

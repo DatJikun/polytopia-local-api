@@ -808,7 +808,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         plate_win_n, _plate_star_n = _plate_gold_split(arr, cx, cy, bw, bh)
         strong_vengir = _disrof_signal(roof_n, gold_n, frost_plate, plate_win_n)
         # Adjacent unit on the plate can kill letter-contrast; Disrof still counts.
-        if not _plate_contrast(arr, cx, cy, bw, bh) and not strong_vengir:
+        # Gold-star Bardur banners (live cities_own 3–4 vs a full screen) still count.
+        if not _plate_contrast(arr, cx, cy, bw, bh) and not strong_vengir and not marks:
             continue
         sampled_tribe, rgb = sample_patch_tribe(
             arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14
@@ -946,6 +947,10 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         # Same hex / overlapping nameplate already merged above (grey-stone
         # half of Disrof). A 64px radius ate nearby Bardur (live: cities_own=2).
         return 0
+    if oa == "own" and ob == "own":
+        # Neighbor Bardur 1 hex apart: banners kiss (~36–80px) but they are
+        # two cities. Live cities_own stayed 3–4 while more sat on screen.
+        return 0
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
         # Same nameplate still merges via tile / plate overlap above.
@@ -975,9 +980,12 @@ def _plates_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
             tiles_differ = (int(ta[0]), int(ta[1])) != (int(tb[0]), int(tb[1]))
         except (TypeError, ValueError):
             tiles_differ = False
+    if tiles_differ and oa == "own" and ob == "own":
+        # Neighbor Bardur 1 hex apart: banners kiss but they are two cities.
+        # Gold-star halves of ONE enemy banner still merge below.
+        return False
     if oa and ob and oa != ob and tiles_differ:
         # Neighbor Bardur 1 hex from Disrof (live: cities_own collapsed to 2).
-        # Split halves of ONE banner share a tile and merge above.
         return False
     return gap <= 64
 
