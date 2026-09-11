@@ -674,7 +674,20 @@ def _wine_wall_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> in
         & (np.maximum(np.maximum(r, g), b) <= 175)
         & (np.abs(r.astype(np.int32) - b) <= 90)
     )
-    return int(wine.sum())
+    # Live T46 after #47: c14_23 veins (96,92,90) are purple≈1 / g=92 so
+    # wine_n stayed 0 and the 5th enemy vanished. Bardur wood (90,85,80)
+    # is g=85 / purple=0 — keep that out.
+    ash = (
+        (g >= 88)
+        & (g <= 96)
+        & (r >= 88)
+        & (b >= 84)
+        & (purple >= 0.5)
+        & (purple <= 8.0)
+        & (np.abs(r.astype(np.int32) - b) <= 12)
+        & (np.maximum(np.maximum(r, g), b) <= 110)
+    )
+    return int((wine | ash).sum())
 
 
 def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[str, list[int]]:
@@ -893,17 +906,41 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             or col_tribe == "bardur"
             or classify_tribe(rgb) == "bardur"
         )
+        warm_n, wood_w, wood_h, wood_dens = _bardur_wood_stats(arr, cx, cy, bw, up)
+        rec_shape = {
+            "warm_n": warm_n,
+            "wood_w": wood_w,
+            "wood_h": wood_h,
+            "wood_dens": wood_dens,
+            "gold_n": gold_n,
+            "n": n,
+            "w": bw,
+        }
+        own_longhouse = wood and _is_own_longhouse_hit(rec_shape)
         # Magenta roof is enough. Huge building gold / plate-window *pairs* are
         # Disrof. Modest gold on Bardur wood next to a nameplate star is the
         # Ufla-class roof lamps (live T46: those must stay cities_own, not ghosts
-        # and not stolen as Vengir).
+        # and not stolen as Vengir). After #47 a few wine-shadow px (roof_n≥8)
+        # plus recruit gold leak tagged Orkork magenta_roof+gold_lamps enemy.
         disrof_gold = frost_plate and (
             plate_win_n >= 8
             or gold_n >= 280
             or (gold_n >= 8 and not (wood and marks))
         )
-        real_disrof = roof_n >= 8 or disrof_gold
-        if real_disrof or (strong_vengir and not wood):
+        if own_longhouse:
+            dens_lh = float(wood_dens or 0)
+            if dens_lh >= 0.34:
+                # Synthetic / solid-wood Disrof with plate windows stays enemy.
+                real_disrof = roof_n >= 8 or gold_n >= 280 or plate_win_n >= 8
+            else:
+                # Sparse live longhouse: wine-shadow roof_n≈8 and recruit plate-gold
+                # leak must not steal Orkork. Real Disrof roofs are hundreds of px.
+                real_disrof = roof_n >= 40 or gold_n >= 280
+        else:
+            real_disrof = roof_n >= 8 or disrof_gold
+        if own_longhouse and not real_disrof:
+            tribe = "bardur"
+        elif real_disrof or (strong_vengir and not wood):
             tribe = "vengir"
         elif strong_vengir and wood:
             tribe = "bardur"
@@ -956,29 +993,15 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         if tribe == "unknown":
             continue
         own = tribe == _own_tribe()
-        warm_n = 0
-        wood_w = 0
-        wood_h = 0
-        wood_dens = 0.0
         grey_stone = False
         if own:
             # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
             # but a lettered full plate still counts when the star clustered onto a
             # neighbor. Mid-dense low-gold (any width) is Vengir grey stone — live
             # T46 after #46 dropped ww≈47 c12_16 and cities_enemy stayed 4.
-            warm_n, wood_w, wood_h, wood_dens = _bardur_wood_stats(arr, cx, cy, bw, up)
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
             # #32's warm_n>=500 floor ate live Bufla/Orkork (cities_own 1→0).
             # Synthetic longhouses are ~1600+; live moonrise wood is far sparser.
-            rec_shape = {
-                "warm_n": warm_n,
-                "wood_w": wood_w,
-                "wood_h": wood_h,
-                "wood_dens": wood_dens,
-                "gold_n": gold_n,
-                "n": n,
-                "w": bw,
-            }
             if _own_wood_is_grey_stone_mass(rec_shape):
                 # Live c12_16: Vengir grey stone matches Bardur wood (warm≈936
                 # dens≈0.28 gold_n≈5) and stole cities_own while cities_enemy
@@ -1397,6 +1420,7 @@ def _sparse_own_longhouse(c: dict[str, Any]) -> bool:
     (c15_12 / c15_15 / c15_24) so own flickered 2→3. Real longhouses are
     wider AND taller (Bufla/Orkork ww≳36 wh≳60 warm≳140 dens≳0.06, plate
     w≳70 or n≳900). Dict fixtures that omit plate n/w stay wood-only.
+    Gold-lamp split plates (n/w below this) use `_gold_lamp_sparse_longhouse`.
     """
     if _own_wood_is_grey_stone_mass(c):
         return False
@@ -1406,6 +1430,47 @@ def _sparse_own_longhouse(c: dict[str, Any]) -> bool:
     if c.get("w") is None and c.get("n") is None:
         return True
     return int(c.get("w") or 0) >= 70 or int(c.get("n") or 0) >= 900
+
+
+def _gold_lamp_sparse_longhouse(c: dict[str, Any]) -> bool:
+    """Bufla/Orkork roof lamps on sparse wood — gold-star hole can shrink the plate.
+
+    #47 required dens<0.34 → city-sized plate (n≥900/w≥70) and live T46 clean
+    observe dropped both longhouses (cities_own 2→0). Roof lamps (gold_n 68–116,
+    warm≈260) keep even when n/w is a split fragment. Gold-leaked FPs after
+    /recruit (c15_12 gold≈40 warm≈180 n≈620 w≈58) stay out. Grey stone is
+    mid-dense / low-gold — not this.
+    """
+    if _own_wood_is_grey_stone_mass(c):
+        return False
+    gold = int(c.get("gold_n") or 0)
+    dens = float(c.get("wood_dens") or 0)
+    if gold < 24 or dens >= 0.16:
+        return False
+    # Plate centroid can sit a few px above the wood (live split); 60px is tight.
+    if (
+        int(c.get("wood_w") or 0) < 36
+        or int(c.get("wood_h") or 0) < 54
+        or int(c.get("warm_n") or 0) < 140
+        or dens < 0.06
+    ):
+        return False
+    warm = int(c.get("warm_n") or 0)
+    # Live lamps 68–116 + wood ≈260. Leak fixtures are gold≈36–40 / warm≈180
+    # on a fragment plate (n≈620 w≈58).
+    if gold >= 48 and warm >= 220:
+        return True
+    return int(c.get("w") or 0) >= 62 or int(c.get("n") or 0) >= 720
+
+
+def _is_own_longhouse_hit(c: dict[str, Any]) -> bool:
+    """Sparse live longhouse or gold-lamp split plate — not grey stone."""
+    return _sparse_own_longhouse(c) or _gold_lamp_sparse_longhouse(c)
+
+
+def _dark_vengir_city_plate(c: dict[str, Any]) -> bool:
+    """c14_23 salvage. Frost FPs are n≈500 w≈56; #47's 900/70 missed live plates."""
+    return int(c.get("w") or 0) >= 60 or int(c.get("n") or 0) >= 640
 
 
 def _own_miss_is_dark_vengir(
@@ -1422,9 +1487,10 @@ def _own_miss_is_dark_vengir(
     Live after #43/#44: c14_23 (frost+star, gold_n<24) vanished because
     sampled_tribe *and* col_tribe were bardur (wine-grey stone). #44's
     wine_n>=8 + g<=72 still missed live veins (g≈74–86). Count lighter
-    wine-grey. Real Orkork/Bufla (city-sized sparse gold-lamp longhouses)
-    stay own. Mid-dense low-gold at ww≳36 is grey stone, not Bufla
-    (live T46 after #46: c12_16 vanished and enemy stayed 4).
+    wine-grey. Real Orkork/Bufla (sparse gold-lamp longhouses, even when the
+    gold-star hole splits plate n/w below 900/70) stay own. Mid-dense low-gold
+    at any width is grey stone, not Bufla (live T46 after #46: c12_16 vanished
+    and enemy stayed 4).
     """
     if not frost_plate or not marks:
         return False
@@ -1434,8 +1500,8 @@ def _own_miss_is_dark_vengir(
     dens = float(rec.get("wood_dens") or 0)
     if dens >= 0.34:
         return False
-    # City-sized sparse longhouses stay own even when wine-shadow ticks.
-    if _sparse_own_longhouse(rec) and dens < 0.16:
+    # Sparse gold-lamp / city-sized longhouses stay own even when wine-shadow ticks.
+    if _is_own_longhouse_hit(rec) and dens < 0.16:
         return False
     if sampled_tribe == "vengir" or col_tribe == "vengir":
         return True
@@ -1443,10 +1509,10 @@ def _own_miss_is_dark_vengir(
     # Vengir walls. 8px was too strict — live c14_23 was 0 hits.
     if int(wine_n or 0) >= WINE_SALVAGE_MIN:
         return True
-    # After #45 wine_n==0 on the live frame. City-sized frost+star that is
-    # not a sparse longhouse is still the missing 5th Vengir (including
-    # ww≳36 mid-dense grey stone). Frost FPs are smaller (n≈500 w≈56).
-    return int(rec.get("w") or 0) >= 70 or int(rec.get("n") or 0) >= 900
+    # After #45/#47 wine_n==0 on the live frame. Frost+star that is not a
+    # longhouse is still the missing 5th Vengir. Frost FPs are n≈500 w≈56;
+    # live c14_23 can sit below #47's n≥900/w≥70.
+    return _dark_vengir_city_plate(rec)
 
 
 def _own_plate_is_split_fragment(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1484,9 +1550,10 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     After /recruit or /move-to, leaked gold (gold_n≥24) on the same fragment
     (ww≈30 dens≈0.08, and live T46 after #46: c15_12 with ww inflated ≳36)
     used to pass this gate and sticky-grow own 2→3. A dense unit-sized blob
-    (ww≈31 dens≈0.46 gold_n≥24) is not a synthetic longhouse. Gold does not
-    skip the city-sized plate. Split-plate longhouses merge earlier / stay
-    sticky. Dict fixtures omit wood_* — treat those as already-vetted cities.
+    (ww≈31 dens≈0.46 gold_n≥24) is not a synthetic longhouse. Gold-lamp
+    longhouses keep without a city-sized plate; leaked FPs (gold≈40 warm≈180)
+    do not. Split-plate longhouses merge earlier / stay sticky. Dict fixtures
+    omit wood_* — treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
         return True
@@ -1509,14 +1576,16 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
         ww = int(c.get("wood_w") or 0)
         nw = int(c.get("n") or 0)
         bw = int(c.get("w") or 0)
-        # Sparse live longhouse keeps via city-sized plate (n≥900 or w≥70)
-        # even when gold_n is 0, occluded, *or* inflated by recruit/move leak.
-        # Compact / synthetic longhouses keep via dens≳0.34 even when gold_n=0
-        # (scaled 1280 `_draw_bardur_city` n≈700 w≈55). A gold-leaked unit
-        # blob (ww≈31 dens≈0.46 gold_n≥24) is not that. After #46, gold≥24
-        # plus a ww≳36 footprint alone let c15_12 become a 3rd own.
+        # Sparse live longhouse keeps via city-sized plate *or* roof lamps on
+        # the wood footprint. #47's dens<0.34 → n≥900/w≥70 dropped Bufla/Orkork
+        # (gold-star hole splits the plate). Compact / synthetic longhouses keep
+        # via dens≳0.34 even when gold_n=0 (scaled 1280 `_draw_bardur_city`
+        # n≈700 w≈55). A gold-leaked unit blob (ww≈31 dens≈0.46 gold_n≥24) is
+        # not that. After #46, gold≥24 plus a ww≳36 footprint alone let c15_12
+        # become a 3rd own — require lamps+wood (gold≥48 warm≥220) or a near
+        # plate, not fragment n≈620 w≈58.
         if dens < 0.34:
-            if not _sparse_own_longhouse(c):
+            if not _is_own_longhouse_hit(c):
                 return False
         elif gold >= 24 and ww < 36:
             return False
@@ -1539,7 +1608,8 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
     (c12_16 dens≈0.28 gold_n≈5 ww≈32–47 / c17_14), *and* frost/wood plates
     with a gold star but no city-sized longhouse (c15_15 / c15_12 / c15_24),
     including after /recruit+/move-to gold leak (gold_n≥24 on ww≈30 or a
-    ww≳36 inflated fragment), still drop from own. Orkork/c16_24 stays.
+    ww≳36 inflated fragment with gold≈40/warm≈180), still drop from own.
+    Gold-lamp Bufla/Orkork stay even when the plate is below n≥900/w≥70.
     """
     if c.get("owner") != "own":
         return False
@@ -1703,12 +1773,75 @@ def _drop_grey_splits_near_own(cities: list[dict[str, Any]], dist: int = 56) -> 
     return out
 
 
+def _enemy_gold_leak_phantom(c: dict[str, Any]) -> bool:
+    """Recruit/move gold leak on a frost fragment is not a 6th–8th Vengir.
+
+    Live T46 after #47: cities_enemy bloated 4→7–8 with c15_14 / c16_12 / c8_23
+    (gold_lamps, fragment plate). Real Disrof has magenta, huge gold, or a
+    city-sized plate. Grey-stone c12_16 and dark_vengir c14_23 stay.
+    """
+    if c.get("owner") != "enemy" or c.get("tribe") != "vengir":
+        return False
+    if c.get("name"):
+        return False
+    ev = c.get("evidence") or []
+    if "magenta_roof" in ev or "grey_stone" in ev or "dark_vengir" in ev:
+        return False
+    gold = int(c.get("gold_n") or 0)
+    # Plate-window Disrof fragments often have gold_n=0 (lamps are on the frost).
+    # Recruit leak paints building gold (live c15_12 gold≈36–40).
+    if gold < 24 or gold >= 280:
+        return False
+    if int(c.get("roof_n") or 0) >= 40:
+        return False
+    if int(c.get("n") or 0) >= 900 or int(c.get("w") or 0) >= 70:
+        return False
+    return "gold_lamps" in ev or "gold_star" in ev
+
+
+def _drop_enemy_gold_leak_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for c in cities if not _enemy_gold_leak_phantom(c)]
+
+
+def _drop_wine_shadow_enemy_near_own(
+    cities: list[dict[str, Any]], dist: int = 56
+) -> list[dict[str, Any]]:
+    """Wine-shadow frost fragment next to Bufla/Orkork is not a 6th Vengir.
+
+    Live after #47: Orkork leaked as magenta_roof+gold_lamps and a nearby
+    split (c15_23) stayed enemy. Real Disrof / c14_23 / grey-stone are
+    city-sized or tagged dark_vengir/grey_stone.
+    """
+    owns = [c for c in cities if c.get("owner") == "own" and _is_real_own_hit(c)]
+    if not owns:
+        return cities
+    out: list[dict[str, Any]] = []
+    for c in cities:
+        if (
+            c.get("owner") == "enemy"
+            and int(c.get("n") or 0) <= 400
+            and int(c.get("w") or 99) <= 56
+            and int(c.get("gold_n") or 0) < 280
+            and int(c.get("roof_n") or 0) < 40
+            and "grey_stone" not in (c.get("evidence") or [])
+            and "dark_vengir" not in (c.get("evidence") or [])
+        ):
+            if any(_city_sep2(c, o) <= dist * dist for o in owns):
+                continue
+        out.append(c)
+    return out
+
+
 def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every real enemy city. A 12-own map must not empty cities_enemy."""
     cities = _cap_vengir(
-        _drop_grey_splits_near_own(
-            _dedupe_cities(
-                _drop_split_plate_own(_drop_own_phantoms(list(cities)))
+        _drop_wine_shadow_enemy_near_own(
+            _drop_grey_splits_near_own(
+                _drop_enemy_gold_leak_phantoms(
+                    _dedupe_cities(
+                        _drop_split_plate_own(_drop_own_phantoms(list(cities)))
+                    )
+                )
             )
         )
     )
