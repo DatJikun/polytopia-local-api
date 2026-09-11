@@ -472,6 +472,16 @@ def _adjacent_city_foot(
 def _unit_xy(obs: dict[str, Any] | None, ident: str | None) -> tuple[int, int] | None:
     if not ident:
         return None
+    if obs:
+        for u in obs.get("units") or []:
+            if str(u.get("id") or "") != str(ident):
+                continue
+            if u.get("seen") is False:
+                continue
+            try:
+                return int(u["x"]), int(u["y"])
+            except (KeyError, TypeError, ValueError):
+                continue
     hit = lookup(obs, ident) if obs else None
     if not hit:
         hit = _resolve(ident)
@@ -501,6 +511,208 @@ def _city_click_misfire(
     if xy0 and xy1 and xy0 == xy1:
         return True
     return False
+
+
+def _opened_city_panel(obs: dict[str, Any] | None) -> bool:
+    """TRAIN / Settings after a roof click — the unit did not walk."""
+    if _panel_capture(obs):
+        return False
+    panel = (obs or {}).get("unit") or {}
+    if panel.get("settings"):
+        return True
+    return bool(panel.get("train") and not panel.get("capture"))
+
+
+def _unit_hex_on_city(
+    obs: dict[str, Any] | None,
+    dest: dict[str, Any] | None,
+    frame: tuple[int, int],
+    from_id: str | None,
+) -> dict[str, Any] | None:
+    """Same hex as the city walk/roof — not dest.tile (that numbering can match an adjacent HP bar)."""
+    if not dest:
+        return None
+    walk = combat.city_walk_center(dest, frame) or combat.city_tile_center(dest, frame)
+    if walk is None:
+        return None
+    city_hex = combat.tile_grid(walk[0], walk[1], frame)
+    uid = str(from_id or "")
+    for u in (obs or {}).get("units") or []:
+        if u.get("seen") is False:
+            continue
+        owner = str(u.get("owner") or "")
+        if owner and owner not in {"own", "unknown"}:
+            continue
+        if uid and str(u.get("id") or "") not in {"", uid}:
+            continue
+        try:
+            ux, uy = int(u["x"]), int(u["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if combat.tile_grid(ux, uy, frame) != city_hex:
+            continue
+        return u
+    return None
+
+
+def _foot_aim_points(
+    dest: dict[str, Any],
+    frame: tuple[int, int],
+    mark: dict[str, Any] | None,
+) -> list[tuple[int, int]]:
+    """City-foot pixels. Roof clicks select the city; nudge down onto the ring."""
+    pts: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def _add(xy: tuple[int, int] | None) -> None:
+        if not xy:
+            return
+        key = (int(xy[0]), int(xy[1]))
+        if key in seen:
+            return
+        seen.add(key)
+        pts.append(key)
+
+    walk = combat.city_walk_center(dest, frame)
+    if mark is not None:
+        _add(combat.city_move_aim(mark, dest, frame))
+    _add(walk)
+    if walk:
+        _add((walk[0], walk[1] + 6))
+        _add((walk[0], walk[1] + 12))
+    if mark is not None:
+        try:
+            mx, my = int(mark["x"]), int(mark["y"])
+        except (KeyError, TypeError, ValueError):
+            mx = my = None
+        if mx is not None and walk and my >= walk[1] - 4:
+            _add((mx, my))
+    return pts
+
+
+def _confirm_stood_on_city(
+    before: dict[str, Any],
+    dest: dict[str, Any],
+    frame: tuple[int, int],
+    from_id: str | None,
+    first_sleep: float = 0.45,
+    polls: int = 3,
+    interval: float = 0.4,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Wait for the walk animation, then verify the unit is ON the city hex.
+
+    Live T41: adjacent foot-click returned not_stood_on_city after 0.55s while
+    the sprite was still next to Disrof. Do not re-select until coords stabilize
+    (re-select cancels an in-progress walk).
+    """
+    _sleep(first_sleep)
+    after = observe(mode="marks")
+    if dest:
+        register_cities([dest])
+    frame = _frame(after) or frame
+    on = _stood_on_city(after, dest, frame, allow_panel=True)
+    if on.get("ok"):
+        return after, on
+    if _opened_city_panel(after):
+        return after, on
+    xy_prev = _unit_xy(after, from_id) or _unit_xy(before, from_id)
+    stable = 0
+    for _ in range(polls):
+        _sleep(interval)
+        after = observe(mode="marks")
+        if dest:
+            register_cities([dest])
+        frame = _frame(after) or frame
+        on = _stood_on_city(after, dest, frame, allow_panel=True)
+        if on.get("ok"):
+            return after, on
+        if _opened_city_panel(after):
+            return after, on
+        xy = _unit_xy(after, from_id)
+        if xy and xy_prev and xy == xy_prev:
+            stable += 1
+            if stable >= 2:
+                break
+        else:
+            stable = 0
+        xy_prev = xy or xy_prev
+    return after, on
+
+
+def _retry_city_foot(
+    dest: dict[str, Any],
+    from_id: str | None,
+    from_x: int | None,
+    from_y: int | None,
+    space: str,
+    selected: dict[str, Any] | None,
+    city_id: str | None,
+    to_id: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, float | None, dict[str, Any], dict[str, Any] | None]:
+    """Re-select the walker and click the city foot again (full select so blues light)."""
+    if from_id or from_x is not None:
+        selected = select_unit(
+            x=from_x, y=from_y, id=from_id, space=space, light=False,
+        )
+        selected = _relive_select(selected, from_id, from_x, from_y, space)
+        retry_obs = remember() or observe(mode="marks")
+    else:
+        retry_obs = observe(mode="marks")
+    panel = retry_obs.get("unit") or {}
+    if not retry_obs.get("move_marks") or panel.get("settings"):
+        _sleep(0.28)
+        retry_obs = remember() or observe(mode="marks")
+        panel = retry_obs.get("unit") or {}
+    dest = _resolve(city_id or to_id, space) or dest
+    if dest:
+        register_cities([dest])
+    retry_frame = _frame(retry_obs)
+    retry_marks = list(retry_obs.get("move_marks") or [])
+    if panel.get("settings"):
+        retry_marks = []
+    retry_arr = _shot_arr(retry_obs)
+    mark2, hex_d2 = _find_walk_mark(retry_marks, dest, retry_frame, retry_arr)
+    src = _resolve(from_id) if from_id else None
+    fx = fy = None
+    if src:
+        fx, fy = int(src["x"]), int(src["y"])
+    elif from_x is not None and from_y is not None:
+        fx, fy = int(from_x), int(from_y)
+    walk = combat.city_walk_center(dest, retry_frame) or combat.city_tile_center(dest, retry_frame)
+    reach = combat.can_reach_tile(
+        panel.get("unit"),
+        (fx, fy) if fx is not None else None,
+        walk,
+        retry_frame,
+    )
+    if mark2 is None and not retry_marks and reach.get("ok"):
+        mark2, hex_d2 = _adjacent_city_foot(dest, retry_frame, reach)
+    aims = _foot_aim_points(dest, retry_frame, mark2)[:3]
+    after = retry_obs
+    on = _stood_on_city(after, dest, retry_frame, allow_panel=True)
+    clicked = {"ok": True, "x": aims[0][0], "y": aims[0][1]} if aims else {"ok": True, "x": 0, "y": 0}
+    mark = mark2
+    hex_d = hex_d2
+    if on.get("ok"):
+        return after, on, mark, hex_d, clicked, selected
+    for ax, ay in aims:
+        clicked = _click(ax, ay, space="screen")
+        mark = {
+            **(mark2 or {"n": 0, "kind": "city_walk_retry"}),
+            "x": ax,
+            "y": ay,
+            "aimed": "city_foot",
+        }
+        hex_d = hex_d2 if mark2 is not None else 0.0
+        after, on = _confirm_stood_on_city(retry_obs, dest, retry_frame, from_id)
+        if on.get("ok"):
+            return after, on, mark, hex_d, clicked, selected
+        if _opened_city_panel(after) and (from_id or from_x is not None):
+            selected = select_unit(
+                x=from_x, y=from_y, id=from_id, space=space, light=False,
+            )
+            retry_obs = remember() or after
+    return after, on, mark, hex_d, clicked, selected
 
 
 def _unit_tagged_on_city(obs: dict[str, Any], dest: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -554,6 +766,17 @@ def _stood_on_city(
         )
         if wide.get("ok"):
             return wide
+        hexed = _unit_hex_on_city(obs, dest, frame, None)
+        if hexed is not None:
+            center = combat.city_walk_center(dest, frame) or combat.city_tile_center(dest, frame)
+            return {
+                "ok": True,
+                "reason": "tile_match",
+                "unit": hexed,
+                "hex_pitch": combat.hex_pitch(*frame),
+                "tile_xy": [center[0], center[1]] if center else None,
+                "hex_dist": 0.0,
+            }
     if not _panel_capture(obs):
         return on
     # Capture button only appears ON the city. HP bars sit on the nameplate
@@ -923,48 +1146,22 @@ def _move_to(
         # Keep the mark payload but the click is the foot when the cluster sat on the roof.
         if aim and (int(mark["x"]), int(mark["y"])) != (int(aim[0]), int(aim[1])):
             mark = {**mark, "x": int(aim[0]), "y": int(aim[1]), "aimed": "city_foot"}
-        _sleep(0.55)
-        after = observe(mode="marks")
-        if dest:
-            register_cities([dest])
-        on = _stood_on_city(after, dest, frame, allow_panel=True)
-        # Building / plate clicks select the city (TRAIN) and never walk.
-        # Re-select the unit and click the blue ring (often at the building foot).
-        if not on.get("ok") and _city_click_misfire(after_select, after, from_id):
-            if from_id or from_x is not None:
-                selected = select_unit(
-                    x=from_x, y=from_y, id=from_id, space=space, light=True,
-                )
-                retry_obs = remember() or after
-            else:
-                retry_obs = after
-            retry_frame = _frame(retry_obs)
-            retry_marks = list(retry_obs.get("move_marks") or [])
-            retry_arr = _shot_arr(retry_obs)
-            mark2, hex_d2 = _find_walk_mark(retry_marks, dest, retry_frame, retry_arr)
-            aims: list[tuple[int, int]] = []
-            walk = combat.city_walk_center(dest, retry_frame)
-            if walk:
-                aims.append(walk)
+        after, on = _confirm_stood_on_city(after_select, dest, frame, from_id)
+        # Still adjacent (or TRAIN panel): re-select and click the foot again.
+        # Do this whenever wait failed — not only xy-unchanged misfire (T41 jitter).
+        stand_retried = False
+        if not on.get("ok"):
+            stand_retried = True
+            after, on, mark2, hex_d2, clicked2, selected2 = _retry_city_foot(
+                dest, from_id, from_x, from_y, space, selected, city_id, to_id,
+            )
+            selected = selected2 or selected
+            if clicked2:
+                clicked = clicked2
             if mark2 is not None:
-                aimed = combat.city_move_aim(mark2, dest, retry_frame)
-                if aimed and aimed not in aims:
-                    aims.append(aimed)
-            orig = (int(mark["x"]), int(mark["y"]))
-            if orig not in aims:
-                aims.append(orig)
-            first_xy = (int(clicked["x"]), int(clicked["y"]))
-            for ax, ay in aims:
-                if (ax, ay) == first_xy:
-                    continue
-                clicked = _click(ax, ay, space="screen")
-                _sleep(0.5)
-                after = observe(mode="marks")
-                on = _stood_on_city(after, dest, retry_frame, allow_panel=True)
-                if on.get("ok"):
-                    mark = mark2 or {"x": ax, "y": ay, "n": 0, "kind": "city_walk_retry"}
-                    hex_d = hex_d2 if mark2 is not None else 0.0
-                    break
+                mark = mark2
+            if hex_d2 is not None:
+                hex_d = hex_d2
         stood = bool(on.get("ok"))
         out = {
             "ok": stood,
@@ -984,11 +1181,15 @@ def _move_to(
             "hud": after.get("hud"),
             "ready": after.get("ready"),
             "turn_diff": after.get("turn_diff"),
+            "stand_retried": stand_retried,
         }
         if not stood:
             out["reason"] = "not_stood_on_city"
             out["path_reason"] = "not_stood_on_city"
-            out["hint"] = "clicked the city hex but unit is still adjacent — Capture needs ON tile"
+            out["hint"] = (
+                "clicked the city foot, waited for the walk, re-selected if needed — "
+                "unit is still adjacent; Capture needs ON tile"
+            )
         return out
     if dest:
         x, y = int(dest["x"]), int(dest["y"])
