@@ -1957,7 +1957,7 @@ def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
         "name": None, "confidence": 0.72,
         "evidence": ["frost_plate", "gold_star", "bardur_wood"],
         "x": 441, "y": 455, "plate_y": 480, "tile": [12, 16], "n": 1144, "w": 61,
-        "warm_n": 345, "seen": True,
+        "warm_n": 345, "wood_w": 14, "wood_h": 23, "wood_dens": 0.17, "seen": True,
     }
     out = session_cities([bufla, left, right, phantom])
     own_ids = {c["id"] for c in out if c.get("owner") == "own"}
@@ -2075,6 +2075,110 @@ def test_own_close_plates_merge_adjacent_stay_two():
     assert len(own_ids) == 1, out
     assert own_ids <= {"c15_24", "c16_24"}
 
+    left = _own_city(11, y=540)
+    left["id"] = left["city_id"] = "c11_20"
+    left["tile"] = [11, 20]
+    left["name"] = "Bufla"
+    left["x"], left["y"], left["plate_y"] = 400, 540, 540
+    left["w"] = 90
+    left["warm_n"] = 200
+    left["wood_w"], left["wood_h"], left["wood_dens"] = 40, 38, 0.35
+    right = _own_city(13, y=540)
+    right["id"] = right["city_id"] = "c13_20"
+    right["tile"] = [13, 20]
+    right["name"] = "Orkork"
+    right["x"], right["y"], right["plate_y"] = 480, 540, 540
+    right["w"] = 90
+    right["warm_n"] = 180
+    right["wood_w"], right["wood_h"], right["wood_dens"] = 38, 36, 0.32
+    out = session_cities([left, right])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert own_ids == {"c11_20", "c13_20"}, out
+
+
+def test_own_neighbors_stay_two_even_if_frame_is_1920() -> None:
+    """#32 over-merged ~80px neighbors when hex_pitch grew with a leftover 1920 frame."""
+    from polytopia_api.entities import _own_close_plate_px, session_cities
+
+    coords.set_frame(1920, 1200)
+    try:
+        assert _own_close_plate_px() <= 48
+        a = {
+            "id": "c11_20",
+            "city_id": "c11_20",
+            "tribe": "bardur",
+            "owner": "own",
+            "name": "Bufla",
+            "confidence": 0.72,
+            "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+            "x": 400,
+            "y": 540,
+            "plate_y": 540,
+            "tile": [11, 20],
+            "n": 900,
+            "w": 90,
+            "warm_n": 200,
+            "wood_w": 40,
+            "wood_h": 38,
+            "wood_dens": 0.4,
+            "seen": True,
+        }
+        b = {
+            "id": "c13_20",
+            "city_id": "c13_20",
+            "tribe": "bardur",
+            "owner": "own",
+            "name": "Orkork",
+            "confidence": 0.72,
+            "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+            "x": 480,
+            "y": 540,
+            "plate_y": 540,
+            "tile": [13, 20],
+            "n": 880,
+            "w": 90,
+            "warm_n": 180,
+            "wood_w": 38,
+            "wood_h": 36,
+            "wood_dens": 0.38,
+            "seen": True,
+        }
+        out = session_cities([a, b])
+        own = [c for c in out if c.get("owner") == "own"]
+        assert len(own) == 2, [c.get("id") for c in own]
+        assert {c["name"] for c in own} == {"Bufla", "Orkork"}
+    finally:
+        coords.set_frame(1280, 800)
+
+
+def test_own_modest_warm_n_longhouses_are_not_dropped() -> None:
+    """Live Bufla/Orkork can be well below #32's warm_n>=500 floor — still count as own."""
+    from polytopia_api.entities import _is_real_own_hit, session_cities
+
+    hit = {
+        "id": "c10_22",
+        "city_id": "c10_22",
+        "tribe": "bardur",
+        "owner": "own",
+        "name": None,
+        "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 360,
+        "y": 620,
+        "plate_y": 620,
+        "tile": [10, 22],
+        "n": 1100,
+        "w": 80,
+        "warm_n": 200,
+        "wood_w": 36,
+        "wood_h": 38,
+        "wood_dens": 0.35,
+        "seen": True,
+    }
+    assert _is_real_own_hit(hit)
+    out = session_cities([hit])
+    assert len(out) == 1
+    assert out[0]["id"] == "c10_22"
 
 
 
@@ -4723,6 +4827,8 @@ if __name__ == "__main__":
     test_two_bardur_dedupe_orkork_split_and_mid_phantom()
     test_two_bardur_dedupe_close_plates_drop_mid_phantoms()
     test_own_close_plates_merge_adjacent_stay_two()
+    test_own_neighbors_stay_two_even_if_frame_is_1920()
+    test_own_modest_warm_n_longhouses_are_not_dropped()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
