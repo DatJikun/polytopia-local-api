@@ -615,7 +615,8 @@ def _bardur_wood_stats(
     """Warm Bardur wood in the building column: (n, width, height, density).
 
     A longhouse is a tall wood bbox (live moonrise can be sparse). A
-    unit-on-snow or mountain speck is short/sparse (c12_16 / c17_14).
+    unit-on-snow or mountain speck is short/sparse (c12_16). Tall-empty
+    frost (live T46 c17_14: dens≈0.02) is not a longhouse either.
     """
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
@@ -905,7 +906,17 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
             # #32's warm_n>=500 floor ate live Bufla/Orkork (cities_own 1→0).
             # Synthetic longhouses are ~1600+; live moonrise wood is far sparser.
-            if not wood or warm_n < 30:
+            rec_shape = {
+                "warm_n": warm_n,
+                "wood_w": wood_w,
+                "wood_h": wood_h,
+                "wood_dens": wood_dens,
+            }
+            if (
+                not wood
+                or warm_n < 30
+                or not _own_wood_looks_like_building(rec_shape)
+            ):
                 continue
             if not marks and not lettered:
                 continue
@@ -1221,13 +1232,20 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
     """Drop unit-on-snow / mountain specks; keep live longhouses with sparse wood.
 
     #32 required dens≥0.45×tall (and warm_n≥500). Live Bufla/Orkork failed that
-    (cities_own 1→0). Keep unless the wood bbox is short *and* sparse.
+    (cities_own 1→0). #33 short∧sparse (wh<34 && dens<0.38) still lets through
+    tall-empty frost (live T46 c17_14: wh=48 dens=0.021 warm=67). Keep Bufla/
+    Orkork (wh≈69–72 dens≈0.08–0.09 warm≈260). Never restore warm_n>=500.
     Dict fixtures omit wood_* — treat those as already-vetted cities.
     """
     if c.get("wood_h") is None and c.get("wood_dens") is None:
         return True
     wh = int(c.get("wood_h") or 0)
     dens = float(c.get("wood_dens") or 0)
+    warm = int(c.get("warm_n") or 0)
+    # Tall frost streak: bbox can be 48px from scattered specks, almost empty.
+    # Coupled to low warm_n so a dim longhouse at dens≈0.08 still counts.
+    if dens < 0.05 and warm < 140:
+        return False
     # Unit frost ~31×0.31; mountain speck ~23×0.17; scaled longhouse ~40×0.55.
     if wh < 34 and dens < 0.38:
         return False
@@ -1241,7 +1259,8 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
 
     Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). #32's warm_n>=500
     floor left cities_own 1→0. Close-plate merge is capped at 48px so ~80px
-    neighbors stay two. Short/sparse wood (c12_16 / c17_14) still drops.
+    neighbors stay two. Short/sparse *and* tall-empty wood (c12_16 / c17_14)
+    still drop.
     """
     if c.get("owner") != "own":
         return False
@@ -1302,7 +1321,7 @@ MAX_CITIES_OWN = 24
 
 
 def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop unnamed / low-evidence / HUD-fog / unit-sized own cities (c12_16, c17_14)."""
+    """Drop unnamed / HUD-fog / unit-sized / tall-empty own cities (c12_16, c17_14)."""
     out: list[dict[str, Any]] = []
     for c in cities:
         if c.get("owner") == "own" and not _is_real_own_hit(c):
