@@ -72,8 +72,9 @@ def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tup
     """Majority tribe in a patch — one water pixel must not become Imperius.
 
     Vengir cities are dark-grey stone + purple roofs + gold window lights.
-    Those lamps match Oumaji sand pixel-for-pixel; context wins: any purple
-    roof, or gold-on-dark-stone, is Vengir — not a desert city.
+    Those lamps match Oumaji sand pixel-for-pixel. A few gold pixels on
+    Bardur wood (nameplate star leak) must stay Bardur; gold *dominating*
+    a dark patch is Disrof window lamps, not a desert city.
     """
     h, w = arr.shape[:2]
     x0, x1 = max(0, x - radius), min(w, x + radius + 1)
@@ -290,13 +291,20 @@ def _plate_is_frost(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool
     return float(frost.mean()) >= 0.35
 
 
+def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[int, int, int, int]:
+    """Narrow column above the frost plate — this city's building, not a neighbor."""
+    h, w = arr.shape[:2]
+    half = max(16, bw // 3)
+    x0 = max(0, cx - half)
+    x1 = min(w, cx + half + 1)
+    y0 = max(0, cy - up * 2 - 16)
+    y1 = max(y0 + 1, min(h, cy - 10))
+    return x0, x1, y0, y1
+
+
 def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
     """Magenta/wine roof can sit well above the frost plate (outside radius=14)."""
-    h, w = arr.shape[:2]
-    x0 = max(0, cx - max(20, bw // 2 + 10))
-    x1 = min(w, cx + max(20, bw // 2 + 10) + 1)
-    y0 = max(0, cy - up * 2 - 16)
-    y1 = max(y0 + 1, min(h, cy - 4))
+    x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
     if crop.size < 20:
         return 0
@@ -317,11 +325,7 @@ def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
 
 def _gold_window_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
     """Gold lamps on the building (above the plate), not the nameplate star."""
-    h, w = arr.shape[:2]
-    x0 = max(0, cx - max(16, bw // 2))
-    x1 = min(w, cx + max(16, bw // 2) + 1)
-    y0 = max(0, cy - up * 2 - 8)
-    y1 = max(y0 + 1, min(h, cy - 6))
+    x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
     if crop.size < 20:
         return 0
@@ -330,6 +334,14 @@ def _gold_window_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
     b = crop[:, :, 2].astype(np.int32)
     gold = (r >= 180) & (g >= 140) & (g <= 220) & (b <= 110) & (r >= b + 60)
     return int(gold.sum())
+
+
+def _disrof_signal(roof_n: int, gold_n: int, frost_plate: bool = False) -> bool:
+    """Live Disrof: magenta roof, or gold lamps on a frost-plate city (not sand)."""
+    if roof_n >= 8:
+        return True
+    return bool(frost_plate) and gold_n >= 16
+
 
 
 def _plate_contrast(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> bool:
@@ -396,26 +408,31 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         roof_n = _vengir_roof_pixels(arr, cx, cy, bw, up)
         gold_n = _gold_window_pixels(arr, cx, cy, bw, up)
         frost_plate = _plate_is_frost(arr, cx, cy, bw, bh)
-        strong_vengir = roof_n >= 8 or gold_n >= 8
-        if roof_n >= 8:
+        strong_vengir = _disrof_signal(roof_n, gold_n, frost_plate)
+        if strong_vengir:
             tribe = "vengir"
-        # Gold lamps on a frost nameplate are Disrof, not a desert city.
-        # Bare frost + sand-colored pixels (no roof, no lamps) are FPs.
-        if tribe == "oumaji" and frost_plate and strong_vengir:
-            tribe = "vengir"
-        if tribe == "vengir" and sampled_tribe not in {"vengir"} and not strong_vengir:
-            continue
-        # Skip plate OCR for known tribes — names are optional and tesseract
-        # on every frost cluster made /attack hang past 12s.
+        elif tribe == "vengir":
+            # Purple noise without a magenta roof / lamps: grey Bardur wood stays own.
+            lum = (int(rgb[0]) + int(rgb[1]) + int(rgb[2])) / 3.0
+            chroma = max(int(rgb[0]), int(rgb[1]), int(rgb[2])) - min(
+                int(rgb[0]), int(rgb[1]), int(rgb[2])
+            )
+            if classify_tribe(rgb) == "bardur" or (40 <= lum <= 145 and chroma <= 40):
+                tribe = "bardur"
+            else:
+                continue
+        elif tribe == "oumaji" and frost_plate:
+            if classify_tribe(rgb) == "bardur":
+                tribe = "bardur"
+            else:
+                continue
+        # Skip plate OCR — names are optional; tesseract on frost fragments
+        # invented ghosts like "Arch" and made /attack hang past 12s.
         name = ""
         if tribe == "unknown":
-            name = plate_name(arr, cx, cy, bw, bh)
-        if tribe == "unknown" and not name:
             continue
         own = tribe == _own_tribe()
-        if tribe == "unknown":
-            own = False
-        if not own and tribe == "oumaji" and not frost_plate:
+        if not own and tribe == "oumaji":
             # Bright sand / yellow UI, not a Moonrise frost city.
             continue
         conf = 0.72 if own else 0.62
@@ -467,6 +484,8 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "confidence": conf,
                 "evidence": evidence,
                 "rgb": rgb,
+                "roof_n": roof_n,
+                "gold_n": gold_n,
             }
         )
     cities.sort(

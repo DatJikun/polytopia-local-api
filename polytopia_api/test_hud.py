@@ -135,9 +135,10 @@ def test_find_move_marks_1280():
 def test_entities_on_synthetic_map():
     im = Image.new("RGB", (1920, 1200), (30, 40, 28))
     d = ImageDraw.Draw(im)
-    # own (Bardur) city: grey building + white nameplate
+    # own (Bardur) city: grey building + white nameplate + gold level-star
     d.rectangle((880, 360, 940, 420), fill=(90, 85, 80))
     d.rectangle((860, 430, 960, 448), fill=(240, 240, 235))
+    d.ellipse((942, 432, 956, 446), fill=(224, 188, 63))
     # enemy (Oumaji) city
     d.rectangle((1180, 360, 1240, 420), fill=(210, 180, 60))
     d.rectangle((1160, 430, 1260, 448), fill=(245, 245, 240))
@@ -558,6 +559,87 @@ def test_bardur_own_not_eaten_by_vengir_frost():
         for c in vengir
     ), vengir
     assert all(float(c.get("confidence") or 0) >= 0.78 for c in vengir), vengir
+
+
+def _draw_bardur_city(d, cx: int, plate_y: int) -> None:
+    """Moonrise Bardur: grey wood + frost plate + gold star (Ufla/Orkork/Grugru)."""
+    d.rectangle((cx - 30, plate_y - 78, cx + 30, plate_y - 18), fill=(90, 85, 80))
+    d.rectangle((cx - 52, plate_y - 10, cx + 52, plate_y + 12), fill=(180, 180, 178))
+    d.rectangle((cx - 40, plate_y - 4, cx - 34, plate_y + 6), fill=(40, 40, 40))
+    d.ellipse((cx + 34, plate_y - 6, cx + 50, plate_y + 8), fill=(224, 188, 63))
+
+
+def _draw_disrof_city(d, cx: int, plate_y: int, lamps: bool = True, roof: bool = True) -> None:
+    """Moonrise Disrof: dark stone + magenta roof and/or gold window lamps."""
+    d.rectangle((cx - 35, plate_y - 82, cx + 35, plate_y - 20), fill=(90, 85, 80))
+    if roof:
+        d.rectangle((cx - 22, plate_y - 96, cx + 22, plate_y - 64), fill=(150, 74, 144))
+    if lamps:
+        d.rectangle((cx - 16, plate_y - 52, cx - 4, plate_y - 36), fill=(224, 188, 63))
+        d.rectangle((cx + 6, plate_y - 52, cx + 18, plate_y - 36), fill=(224, 188, 63))
+    d.rectangle((cx - 62, plate_y - 10, cx + 62, plate_y + 12), fill=(180, 180, 178))
+    d.rectangle((cx - 48, plate_y - 2, cx - 42, plate_y + 8), fill=(40, 40, 40))
+    d.ellipse((cx + 42, plate_y - 6, cx + 58, plate_y + 8), fill=(224, 188, 63))
+
+
+def test_bardur_gold_star_stays_own():
+    """Plate gold star must not flip Ufla-class Bardur into cities_enemy."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map, sample_patch_tribe
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 910, 439)
+    arr = as_rgb(im)
+    mapped = observe_map(arr)
+    own = mapped["cities_own"]
+    assert own, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    assert mapped["cities_enemy"] == []
+    tribe, _ = sample_patch_tribe(arr, 910, 390, radius=14)
+    assert tribe == "bardur", tribe
+
+
+def test_m20_bardur_own_and_one_disrof():
+    """Live M20 shape: three Bardur cities on screen + one Disrof, not ~7 Vengir FPs.
+
+    Frost fragments and a nameless 'Arch' plate must not become cities_enemy.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map, sample_patch_tribe
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 640, 520)   # Orkork-class
+    _draw_bardur_city(d, 910, 439)   # Ufla-class
+    _draw_bardur_city(d, 1180, 640)  # Grugru-class
+    _draw_disrof_city(d, 247, 439)
+    # frost / snow fragments that used to become extra Vengir + ghost Arch
+    for x0, y0 in ((90, 210), (340, 260), (520, 180), (760, 280), (1040, 200), (1400, 310)):
+        d.rectangle((x0, y0, x0 + 110, y0 + 22), fill=(180, 180, 178))
+        d.rectangle((x0 + 12, y0 + 6, x0 + 18, y0 + 16), fill=(40, 40, 40))
+    # ghost plate with no building (OCR used to invent "Arch")
+    d.rectangle((430, 720, 560, 742), fill=(180, 180, 178))
+    d.rectangle((444, 726, 450, 736), fill=(35, 35, 35))
+    d.rectangle((458, 726, 464, 736), fill=(35, 35, 35))
+    arr = as_rgb(im)
+    mapped = observe_map(arr)
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 3, own
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    xs_own = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 640) < 40 for x in xs_own), own
+    assert any(abs(x - 910) < 40 for x in xs_own), own
+    assert any(abs(x - 1180) < 40 for x in xs_own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert 1 <= len(vengir) <= 2, enemy
+    assert all(c["owner"] == "enemy" for c in vengir)
+    assert any(abs(int(c["x"]) - 247) < 50 for c in vengir), vengir
+    names = {str(c.get("name") or "").lower() for c in mapped["cities"]}
+    assert "arch" not in names, mapped["cities"]
+    tribe, _ = sample_patch_tribe(arr, 247, 380, radius=14)
+    assert tribe == "vengir", tribe
 
 
 def test_attack_timeout_skips_second_observe():
@@ -1399,6 +1481,8 @@ if __name__ == "__main__":
     test_gold_windows_are_not_oumaji()
     test_disrof_gold_windows_without_magenta_sample()
     test_bardur_own_not_eaten_by_vengir_frost()
+    test_bardur_gold_star_stays_own()
+    test_m20_bardur_own_and_one_disrof()
     test_attack_timeout_skips_second_observe()
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
