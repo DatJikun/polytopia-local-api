@@ -1434,6 +1434,142 @@ def test_vengir_fps_do_not_accumulate_across_frames():
     assert any(c["id"] == "c22_17" for c in unnamed)
 
 
+def test_twelve_own_cities_do_not_wipe_enemy():
+    """Live T44: cities_own had 12 and cities_enemy went [] while Disrot/Rzgórst/Grugru were on screen.
+
+    The combined [:12] after _cap_vengir(others first) dropped every Vengir.
+    """
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    own = [
+        {
+            "id": f"c{i}_{i}",
+            "city_id": f"c{i}_{i}",
+            "tile": [i, i],
+            "tile_xy": [80 + (i % 6) * 180, 120 + (i // 6) * 90],
+            "x": 80 + (i % 6) * 180,
+            "y": 120 + (i // 6) * 90,
+            "plate_y": 140 + (i // 6) * 90,
+            "w": 40,
+            "h": 12,
+            "tribe": "bardur",
+            "owner": "own",
+            "confidence": 0.72,
+            "evidence": ["frost_plate", "gold_star"],
+            "n": 200,
+        }
+        for i in range(12)
+    ]
+    enemy = [
+        {
+            "id": "c20_4",
+            "city_id": "c20_4",
+            "tile": [20, 4],
+            "tile_xy": [220, 360],
+            "x": 220,
+            "y": 360,
+            "plate_y": 390,
+            "w": 80,
+            "tribe": "vengir",
+            "owner": "enemy",
+            "name": None,
+            "confidence": 0.78,
+            "evidence": ["magenta_roof", "gold_lamps", "frost_plate"],
+            "n": 400,
+        },
+        {
+            "id": "c24_8",
+            "city_id": "c24_8",
+            "tile": [24, 8],
+            "tile_xy": [520, 400],
+            "x": 520,
+            "y": 400,
+            "plate_y": 430,
+            "w": 80,
+            "tribe": "vengir",
+            "owner": "enemy",
+            "name": None,
+            "confidence": 0.78,
+            "evidence": ["magenta_roof", "frost_plate"],
+            "n": 360,
+        },
+        {
+            "id": "c28_6",
+            "city_id": "c28_6",
+            "tile": [28, 6],
+            "tile_xy": [820, 380],
+            "x": 820,
+            "y": 380,
+            "plate_y": 410,
+            "w": 80,
+            "tribe": "vengir",
+            "owner": "enemy",
+            "name": None,
+            "confidence": 0.78,
+            "evidence": ["gold_lamps", "frost_plate"],
+            "n": 340,
+        },
+    ]
+    out = session_cities(stabilize(own + enemy, None, keep_missing=True))
+    own_out = [c for c in out if c.get("owner") == "own"]
+    enemy_out = [c for c in out if c.get("owner") == "enemy"]
+    assert len(own_out) == 12, own_out
+    ids = {c["id"] for c in enemy_out}
+    assert ids >= {"c20_4", "c24_8", "c28_6"}, enemy_out
+    assert all(c.get("tribe") == "vengir" for c in enemy_out)
+    assert all(c.get("city_id") == c.get("id") and c.get("tile") and c.get("tile_xy") for c in enemy_out)
+
+
+def test_t44_dark_tile_vengir_stay_cities_enemy():
+    """Live T44 1280×800: Vengir cities on dark tiles must stay in cities_enemy
+    even when the frame already has a full Bardur cities_own list.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    # Twelve Bardur cities (the T44 cities_own fill). Space plates so they
+    # do not merge (gap > 64px).
+    own_pts = [
+        (120, 180), (340, 180), (560, 180), (780, 180),
+        (120, 360), (340, 360), (560, 360), (780, 360),
+        (120, 540), (340, 540), (560, 540), (780, 540),
+    ]
+    for cx, py in own_pts:
+        _draw_bardur_city(d, cx, py)
+    # Three Disrof-class on dark Vengir ground (Disrot / Rzgórst / Grugru).
+    enemy_pts = [(1040, 200), (1160, 380), (1040, 560)]
+    for cx, py in enemy_pts:
+        d.rectangle((cx - 70, py - 110, cx + 70, py + 24), fill=(28, 22, 32))
+        _draw_disrof_city(d, cx, py)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 10, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 3, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+    assert all(c.get("city_id") == c.get("id") and c.get("tile") and c.get("tile_xy") for c in vengir), vengir
+    xs = [int(c["x"]) for c in vengir]
+    assert any(abs(x - 1040) < 80 for x in xs), vengir
+    assert any(abs(x - 1160) < 80 for x in xs), vengir
+
+
+def test_dark_magenta_roof_classifies_vengir():
+    from polytopia_api.entities import classify_tribe
+
+    assert classify_tribe((70, 35, 80)) == "vengir"
+    assert classify_tribe((150, 74, 144)) == "vengir"
+    # T44 dark-tile roof — used to miss min(r,b) >= 40.
+    assert classify_tribe((36, 20, 48)) == "vengir"
+    assert classify_tribe((90, 85, 80)) == "bardur"
+
+
 def test_unit_id_stays_resolvable_after_observe_drops_it():
     """Live: after /attack timeout, next call was 'no entity u2'."""
     from unittest.mock import patch
@@ -3412,6 +3548,9 @@ if __name__ == "__main__":
     test_win_path_move_capture_attack()
     test_city_id_stays_resolvable_after_observe_drops_it()
     test_vengir_fps_do_not_accumulate_across_frames()
+    test_twelve_own_cities_do_not_wipe_enemy()
+    test_t44_dark_tile_vengir_stay_cities_enemy()
+    test_dark_magenta_roof_classifies_vengir()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
     test_move_to_never_returns_ok_null()

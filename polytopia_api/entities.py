@@ -34,14 +34,15 @@ def classify_tribe(rgb: list[int] | tuple[int, int, int]) -> str:
     if b >= 110 and b >= r + 40 and g <= min(b - 35, 125) and r <= 95:
         return "imperius"
     # Vengir: wine walls AND magenta/purple roofs (Disrof). Grey stone is Bardur.
+    # Dark-tile roofs (T44 Disrot / Rzgórst) sit below the old min=40 floor.
     purple = (r + b) / 2 - g
     if (
-        g <= 95
-        and max(r, b) >= 48
-        and max(r, g, b) <= 175
-        and min(r, b) >= 40
-        and purple >= 12
-        and abs(r - b) <= 55
+        g <= 105
+        and max(r, b) >= 40
+        and max(r, g, b) <= 190
+        and min(r, b) >= 28
+        and purple >= 10
+        and abs(r - b) <= 60
     ):
         return "vengir"
     # Bardur dark wood — not forest green, not near-black water shade
@@ -614,12 +615,12 @@ def _vengir_roof_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> 
     b = crop[:, :, 2].astype(np.int32)
     purple = (r + b) / 2 - g
     mag = (
-        (g <= 100)
-        & (np.maximum(r, b) >= 48)
-        & (np.maximum(np.maximum(r, g), b) <= 185)
-        & (np.minimum(r, b) >= 40)
-        & (purple >= 12)
-        & (np.abs(r - b) <= 55)
+        (g <= 105)
+        & (np.maximum(r, b) >= 40)
+        & (np.maximum(np.maximum(r, g), b) <= 190)
+        & (np.minimum(r, b) >= 28)
+        & (purple >= 10)
+        & (np.abs(r - b) <= 60)
     )
     return int(mag.sum())
 
@@ -864,7 +865,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             -int(c["n"]),
         )
     )
-    return _cap_vengir(_dedupe_cities(cities))[:12]
+    return _finalize_cities(cities)
 
 
 def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
@@ -961,34 +962,59 @@ def _keep_sticky_city(c: dict[str, Any]) -> bool:
         return True
     if c.get("name"):
         return True
-    ev = c.get("evidence") or []
-    if "magenta_roof" in ev or "gold_lamps" in ev:
+    if _is_disrof_hit(c):
         return True
     return False
 
 
 def session_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """After stabilize(keep_missing): drop unseen frost FPs, recap unnamed Vengir."""
+    """After stabilize(keep_missing): drop unseen frost FPs, recap unnamed Vengir.
+
+    Own-city growth (T44: 12 Bardur) must not wipe visible Vengir off cities_enemy.
+    """
     kept: list[dict[str, Any]] = []
     for c in cities or []:
         if c.get("seen") is False and not _keep_sticky_city(c):
             continue
         kept.append(c)
-    return _cap_vengir(_dedupe_cities(kept))[:12]
+    return _finalize_cities(kept)
+
+
+# Live T44: cities_own filled the old combined [:12] and cities_enemy went [].
+MAX_CITIES_OWN = 16
+MAX_CITIES_ENEMY = 12
+
+
+def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cap own and enemy separately so a full Bardur list cannot drop Disrof."""
+    cities = _cap_vengir(_dedupe_cities(cities))
+    own = [c for c in cities if c.get("owner") == "own"]
+    enemy = [c for c in cities if c.get("owner") == "enemy"]
+    other = [c for c in cities if c.get("owner") not in {"own", "enemy"}]
+    return enemy[:MAX_CITIES_ENEMY] + own[:MAX_CITIES_OWN] + other
 
 
 def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[dict[str, Any]]:
-    """Keep real Disrof-class hits; drop a swarm of unnamed frost fragments."""
+    """Keep every Disrof-class hit; only unnamed frost fragments are capped.
+
+    OCR names are off (ghost Arch). Three visible Vengir cities must not collapse
+    to two because they are unnamed.
+    """
     named: list[dict[str, Any]] = []
-    unnamed: list[dict[str, Any]] = []
+    real: list[dict[str, Any]] = []
+    frost_fp: list[dict[str, Any]] = []
     others: list[dict[str, Any]] = []
     for c in cities:
         if c.get("tribe") != "vengir":
             others.append(c)
-        elif c.get("name"):
-            named.append(c)
+        elif c.get("name") or _is_disrof_hit(c):
+            if c.get("name"):
+                named.append(c)
+            else:
+                real.append(c)
         else:
-            unnamed.append(c)
+            frost_fp.append(c)
+
     def _score(c: dict[str, Any]) -> tuple:
         ev = c.get("evidence") or []
         return (
@@ -997,8 +1023,10 @@ def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[di
             float(c.get("confidence") or 0),
             int(c.get("n") or 0),
         )
-    unnamed.sort(key=_score, reverse=True)
-    return others + named + unnamed[:unnamed_limit]
+
+    real.sort(key=_score, reverse=True)
+    frost_fp.sort(key=_score, reverse=True)
+    return others + named + real + frost_fp[:unnamed_limit]
 
 
 def _dedupe_cities(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:
