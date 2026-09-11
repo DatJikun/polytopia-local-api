@@ -884,6 +884,10 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 continue
             if not marks and not lettered:
                 continue
+            # HUD stars + frost chrome classify as Bardur wood (live T46: c18_1
+            # y≈45 / gy=1 while Orkork/Bufla/Grugri were the only cities on screen).
+            if _plate_in_top_chrome(cy, h):
+                continue
         if not own and tribe == "oumaji":
             # Bright sand / yellow UI, not a Moonrise frost city.
             continue
@@ -1065,12 +1069,59 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     return b
 
 
+def _hud_bottom(frame_h: int | None = None) -> int:
+    """Bottom of the top chrome (stars / turn / BACK). HUD_CROP is 0.12 of height."""
+    h = int(frame_h or 0)
+    if h <= 0:
+        try:
+            _w, h = coords.frame()
+        except Exception:
+            h = 800
+    return max(40, int(h * 0.12))
+
+
+def _plate_in_top_chrome(plate_y: int, frame_h: int | None = None) -> bool:
+    return int(plate_y) <= _hud_bottom(frame_h)
+
+
+def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
+    """HUD / fog-edge frost is not a Bardur city (live T46: c18_1 @ y≈45).
+
+    Dark HUD chrome matches Bardur wood; the gold star icon matches a
+    nameplate mark. Real cities have their frost plate *below* the HUD.
+    """
+    try:
+        _w, h = coords.frame()
+    except Exception:
+        h = 800
+    hud_y1 = _hud_bottom(h)
+    y = int(c.get("y") or 0)
+    plate = c.get("plate_y")
+    py = int(plate) if plate is not None else y
+    if _plate_in_top_chrome(py, h):
+        return True
+    gy = 99
+    tile = c.get("tile")
+    if isinstance(tile, (list, tuple)) and len(tile) >= 2:
+        try:
+            gy = int(tile[1])
+        except (TypeError, ValueError):
+            gy = 99
+    # Fog row from HUD frost (c18_1). Synthetic helpers use gy=0 at y=200 — keep those.
+    if gy <= 1 and y <= hud_y1:
+        return True
+    return False
+
+
 def _is_real_own_hit(c: dict[str, Any]) -> bool:
     """Ufla-class Bardur: frost plate + gold star (or roof lamps). Bare frost is a ghost.
 
     Live T46 Game Stats: Bardur 2 cities; observe listed 5–7 unnamed phantoms.
+    Later smoke: 3 on screen (Orkork/Bufla/Grugri) vs 4 with HUD/fog c18_1.
     """
     if c.get("owner") != "own":
+        return False
+    if _own_hit_in_top_chrome(c):
         return False
     name = str(c.get("name") or "").strip()
     if len(name) >= 4:
@@ -1123,7 +1174,7 @@ MAX_CITIES_OWN = 24
 
 
 def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop unnamed / low-evidence own cities (c15_15, c15_8, c21_23)."""
+    """Drop unnamed / low-evidence / HUD-fog own cities (c15_15, c18_1)."""
     out: list[dict[str, Any]] = []
     for c in cities:
         if c.get("owner") == "own" and not _is_real_own_hit(c):
