@@ -881,6 +881,10 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             # (live T46: 5–7 Bardur vs 2 on screen — c15_15 / c15_8 / c21_23).
             if wood:
                 tribe = "bardur"
+            elif frost_plate and (marks or _plate_contrast(arr, cx, cy, bw, bh)):
+                # Dark Vengir city: frost nameplate + gold star, no magenta this
+                # frame (live T46: cities_enemy 4 vs Game Stats 5).
+                tribe = "vengir"
             else:
                 continue
         elif tribe == "oumaji" and frost_plate:
@@ -1079,8 +1083,9 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         return _own_close_plate_px()
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
-        # Same nameplate still merges via tile / plate overlap above.
-        # Do not collapse Disrof + Rzgórst at 80px on a zoomed late-game map.
+        # Same nameplate still merges via tile / plate overlap above (halves
+        # ~35px). Kissing banners of two cities (~80px) must not collapse
+        # Distop + grey-stone c12_16 (live T46: cities_enemy 4 vs Game Stats 5).
         return 0
     return dist
 
@@ -1106,13 +1111,17 @@ def _plates_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
             tiles_differ = (int(ta[0]), int(ta[1])) != (int(tb[0]), int(tb[1]))
         except (TypeError, ValueError):
             tiles_differ = False
-    if tiles_differ and oa == "own" and ob == "own":
-        # Neighbor Bardur 1 hex apart: banners kiss but they are two cities.
-        # Gold-star halves of ONE enemy banner still merge below.
-        return False
-    if oa and ob and oa != ob and tiles_differ:
-        # Neighbor Bardur 1 hex from Disrof (live: cities_own collapsed to 2).
-        return False
+    if tiles_differ:
+        # Gold-star / window holes split one plate ~50–68px. Two cities sit
+        # ~80px (live T46: grey-stone c12_16 + Distop merged, enemy 4 vs 5).
+        if _city_sep2(a, b) >= 72 * 72:
+            return False
+        if oa == "own" and ob == "own":
+            # Neighbor Bardur 1 hex apart: banners kiss but they are two cities.
+            return False
+        if oa and ob and oa != ob:
+            # Neighbor Bardur 1 hex from Disrof (live: cities_own collapsed to 2).
+            return False
     return gap <= 64
 
 
@@ -1326,12 +1335,12 @@ def _is_real_own_hit(c: dict[str, Any]) -> bool:
 def _keep_sticky_city(c: dict[str, Any]) -> bool:
     """Unnamed frost FPs must not accumulate across observes (2→4→7).
 
-    Own ghosts stuck the same way (T46: 5–7 vs 2 Bardur on screen). Real
-    Ufla-class plates reappear when they are on screen; city_id stays in
-    ``_CITY_INDEX`` so /recruit /move-to still resolve.
+    Own ghosts stuck the same way (T46: 5–7 vs 2 Bardur on screen) — those
+    still drop. A real longhouse (Bufla / Orkork) must survive a missed
+    frame so cities_own does not flicker 2→1.
     """
     if c.get("owner") == "own":
-        return False
+        return _is_real_own_hit(c)
     if c.get("name"):
         return True
     if _is_disrof_hit(c):

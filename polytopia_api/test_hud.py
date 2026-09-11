@@ -2374,6 +2374,220 @@ def test_tall_dense_low_gold_c12_16_is_enemy_not_own():
     assert any("grey_stone" in (c.get("evidence") or []) for c in vengir), enemy
 
 
+def _draw_dark_vengir_frost_star(d, cx: int, plate_y: int) -> None:
+    """Vengir city with frost plate + gold star, no magenta roof / building lamps.
+
+    Live T46 missing 5th: sampled wine walls, not Bardur wood, not Disrof gold.
+    """
+    d.rectangle((cx - 32, plate_y - 78, cx + 32, plate_y - 16), fill=(72, 40, 78))
+    d.rectangle((cx - 54, plate_y - 10, cx + 54, plate_y + 12), fill=(180, 180, 178))
+    d.rectangle((cx - 42, plate_y - 4, cx - 36, plate_y + 6), fill=(40, 40, 40))
+    d.ellipse((cx + 34, plate_y - 6, cx + 50, plate_y + 8), fill=(224, 188, 63))
+
+
+def test_kissing_grey_stone_and_disrof_stay_two_enemy():
+    """Live after #40: c12_16 flipped to enemy but cities_enemy stayed 4 vs 5.
+
+    Grey-stone c12_16 @(441,455) sat ~80px from a Distop-class Disrof at the
+    same plate_y; plates_overlap gap<=64 merged them. Game Stats Vengir 5.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map, session_cities
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    grey = {
+        "id": "c12_16", "city_id": "c12_16", "tribe": "vengir", "owner": "enemy",
+        "name": None, "confidence": 0.64,
+        "evidence": ["frost_plate", "grey_stone"],
+        "x": 441, "y": 455, "plate_y": 471, "tile": [12, 16], "n": 1144, "w": 61,
+        "warm_n": 936, "wood_w": 32, "wood_h": 72, "wood_dens": 0.277,
+        "gold_n": 5, "seen": True,
+    }
+    distop = _enemy_city("c14_16", [14, 16], 520, 455, w=90, plate_y=471)
+    far = [
+        _enemy_city("c9_12", [9, 12], 320, 280),
+        _enemy_city("c6_9", [6, 9], 200, 200),
+        _enemy_city("c23_17", [23, 17], 840, 460),
+    ]
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 450, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 116, "seen": True,
+    }
+    orkork = {
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 68, "seen": True,
+    }
+    out = session_cities([bufla, orkork, grey, distop, *far])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    enemy_ids = {c["id"] for c in out if c.get("owner") == "enemy"}
+    assert own_ids == {"c7_16", "c16_24"}, out
+    assert {"c12_16", "c14_16", "c9_12", "c6_9", "c23_17"} <= enemy_ids, enemy_ids
+    assert len(enemy_ids) == 5, enemy_ids
+
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 248, 450)
+    _draw_bardur_city(d, 570, 667)
+    _draw_tall_dense_low_gold_phantom(d, 441, 471)
+    _draw_disrof_city(d, 530, 471)
+    _draw_disrof_city(d, 980, 220)
+    _draw_disrof_city(d, 1120, 360)
+    _draw_disrof_city(d, 200, 220)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) == 2, mapped["cities"]
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 5, mapped["cities"]
+    xs = [int(c["x"]) for c in vengir]
+    assert any(abs(x - 441) < 50 for x in xs), enemy
+    assert any(abs(x - 530) < 55 for x in xs), enemy
+
+
+def test_dark_vengir_frost_star_counts_as_enemy():
+    """Wine-wall Vengir with frost+star and no magenta must not be dropped."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 248, 450)
+    _draw_bardur_city(d, 570, 667)
+    _draw_disrof_city(d, 980, 220)
+    _draw_disrof_city(d, 1120, 360)
+    _draw_disrof_city(d, 900, 520)
+    _draw_tall_dense_low_gold_phantom(d, 441, 471)
+    _draw_dark_vengir_frost_star(d, 200, 240)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) == 2, mapped["cities"]
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 5, mapped["cities"]
+    assert any(abs(int(c["x"]) - 200) < 50 for c in vengir), enemy
+
+
+def test_own_longhouses_sticky_across_missed_frame():
+    """Live flicker: cities_own n=1 missing Orkork/c16_24 on one observe."""
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 450, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 116, "seen": True,
+    }
+    orkork = {
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 68, "seen": True,
+    }
+    enemies = [
+        _enemy_city("c9_12", [9, 12], 320, 280),
+        _enemy_city("c6_9", [6, 9], 200, 200),
+        _enemy_city("c23_17", [23, 17], 840, 460),
+        _enemy_city("c12_16", [12, 16], 441, 455, evidence=["frost_plate", "grey_stone"]),
+        _enemy_city("c14_16", [14, 16], 520, 455),
+    ]
+    prev = [bufla, orkork, *enemies]
+    nxt = [dict(bufla, x=bufla["x"] + 1), *enemies]
+    out = session_cities(stabilize(nxt, prev, keep_missing=True))
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    enemy_ids = {c["id"] for c in out if c.get("owner") == "enemy"}
+    assert own_ids == {"c7_16", "c16_24"}, out
+    missed = next(c for c in out if c["id"] == "c16_24")
+    assert missed.get("seen") is False
+    assert len(enemy_ids) == 5, enemy_ids
+    # Consecutive frames keep 2/5 — ghosts still do not grow own.
+    ghost = {
+        "id": "c15_15", "city_id": "c15_15", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72, "evidence": ["frost_plate"],
+        "x": 200, "y": 160, "tile": [15, 15], "n": 40, "w": 36, "seen": True,
+    }
+    grown = session_cities(stabilize([bufla, orkork, *enemies], [bufla, orkork, ghost, *enemies], keep_missing=True))
+    grown_own = {c["id"] for c in grown if c.get("owner") == "own"}
+    assert grown_own == {"c7_16", "c16_24"}, grown
+
+
+def test_recruit_ignores_settings_ocr_leak_and_confirms():
+    """Live: hud.game_stats=false but dismissed=['settings'] blocked TRAIN."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c7_16",
+        "kind": "city",
+        "x": 248,
+        "y": 450,
+        "plate_y": 450,
+        "tile": [7, 16],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+    backs = {"n": 0}
+    panel = {
+        "layout": {"frame": [1280, 800]},
+        "overlay": {
+            "train_blobs": [],
+            "capture_blobs": [{"x": 184, "y": 740, "n": 180}],
+            "do_it_blobs": [],
+        },
+        "unit": {
+            "train": True,
+            "settings": True,
+            "raw": "Train  Settings",
+            "game_stats": False,
+        },
+        "ready": {"train": True},
+        "hud": {"game_stats": False},
+        "turn_diff": None,
+    }
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    def fake_back():
+        backs["n"] += 1
+
+    with patch.object(commands, "remember", return_value=panel), patch.object(
+        commands, "observe", return_value=panel
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ), patch.object(commands.driver, "back", side_effect=fake_back):
+        r = commands.recruit(city_id="c7_16")
+    assert r["ok"] is True, r
+    assert r.get("confirmed") is True, r
+    assert "settings" not in (r.get("dismissed") or []), r
+    assert backs["n"] == 0, r
+    assert (184, 740) in clicks, clicks
+    reset_obs()
+
+
 def test_two_bardur_match_screen_not_frost_phantoms():
     """Live T46: Game Stats Bardur 2; observe listed 5–7 (c15_15, c15_8, c21_23)."""
     from polytopia_api.detect import as_rgb
@@ -5146,6 +5360,9 @@ if __name__ == "__main__":
     test_own_modest_warm_n_longhouses_are_not_dropped()
     test_tall_sparse_frost_c17_14_dropped_live_longhouses_kept()
     test_tall_dense_low_gold_c12_16_is_enemy_not_own()
+    test_kissing_grey_stone_and_disrof_stay_two_enemy()
+    test_dark_vengir_frost_star_counts_as_enemy()
+    test_own_longhouses_sticky_across_missed_frame()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
@@ -5156,6 +5373,7 @@ if __name__ == "__main__":
     test_recruit_waits_for_train_after_nameplate()
     test_recruit_ignores_game_stats_blob()
     test_recruit_backs_off_game_stats_overlay()
+    test_recruit_ignores_settings_ocr_leak_and_confirms()
     test_adjacent_bardur_cities_stay_two_own()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()

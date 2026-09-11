@@ -29,7 +29,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_observe",
-        "description": "Screenshot observe: HUD, stable units/cities (Bardur stay cities_own even 1 hex from Vengir and never flip own→enemy; cities_own matches Game Stats / screen — frost-plate + gold star/lamps on a longhouse below the HUD, including sparse live wood (warm≈260 dens≈0.08 gold_n 68–116); close-plate dupes (~35px Orkork c15_24/c16_24) merge; 1-hex neighbors ~80px stay two; mid-map unit/mountain phantoms (c12_16) and tall-empty frost (c17_14 dens≈0.02) and tall-dense-low-gold grey stone (c12_16 dens≈0.28 gold_n≈5 → cities_enemy) and HUD-fog (c18_1 y≈45) drop from own and do not sticky-grow 2→3–5; visible Vengir stay cities_enemy even when cities_own is full / 12+ Bardur; distinct Disrof/Rzgórst do not merge at 80px; Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
+        "description": "Screenshot observe: HUD, stable units/cities (Bardur stay cities_own even 1 hex from Vengir and never flip own→enemy; cities_own matches Game Stats / screen — frost-plate + gold star/lamps on a longhouse below the HUD, including sparse live wood (warm≈260 dens≈0.08 gold_n 68–116); close-plate dupes (~35px Orkork c15_24/c16_24) merge; 1-hex neighbors ~80px stay two; a missed-frame Orkork stays sticky (cities_own does not flicker 2→1); mid-map unit/mountain phantoms and tall-empty frost (c17_14 dens≈0.02) drop from own; tall-dense-low-gold grey stone (c12_16 dens≈0.28 gold_n≈5 → cities_enemy) and HUD-fog (c18_1 y≈45) drop from own and do not sticky-grow 2→3–5; visible Vengir stay cities_enemy even when cities_own is full / 12+ Bardur; distinct Disrof/Rzgórst/grey-stone neighbors do not merge at ~80px kissing banners (Game Stats Vengir 5); Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -98,7 +98,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_recruit",
-        "description": "Select own city_id (roof/nameplate, not unit foot) so TRAIN appears, then click the UNIT_CROP TRAIN/confirm pill — never Disband, Tech, or GAME_STATS. Marks observe under 8s. Radial unit portraits still need a map click.",
+        "description": "Select own city_id (roof/nameplate, not unit foot) so TRAIN appears, then click the UNIT_CROP TRAIN/confirm pill — never Disband, Tech, GAME_STATS, or Settings. Dock 'Settings' OCR leak does not BACK the city panel. confirmed=true after the UNIT_CROP click. Marks observe under 8s. Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {
