@@ -44,15 +44,19 @@ def lookup_city(ident: str) -> dict[str, Any] | None:
             return c
         if str(c.get("id_alias") or "") == ident:
             return c
+        if str(c.get("city_id") or "") == ident:
+            return c
     return None
 
 
 def register_cities(cities: list[dict[str, Any]] | None) -> None:
     for c in cities or []:
-        cid = str(c.get("id") or "")
+        cid = str(c.get("id") or c.get("city_id") or "")
         if not cid:
             continue
         stored = dict(c)
+        stored["id"] = cid
+        stored["city_id"] = cid
         _CITY_INDEX[cid] = stored
         alias = stored.get("id_alias")
         if alias:
@@ -100,6 +104,8 @@ def lookup(obs: dict[str, Any] | None, ident: str) -> dict[str, Any] | None:
                     return it
                 if ident.startswith("c") and str(it.get("id_alias") or "") == ident:
                     return it
+                if ident.startswith("c") and str(it.get("city_id") or "") == ident:
+                    return it
                 if ident.startswith("u") and str(it.get("id_alias") or "") == ident:
                     return it
     if ident.startswith("u"):
@@ -133,12 +139,32 @@ def _is_grid_city_id(ident: Any) -> bool:
     return len(s) > 2 and s[0] == "c" and "_" in s[1:]
 
 
+def _stamp_city_id(c: dict[str, Any]) -> dict[str, Any]:
+    cid = str(c.get("id") or c.get("city_id") or "")
+    if cid:
+        c["id"] = cid
+        c["city_id"] = cid
+    return c
+
+
 def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
     if src.get("name") and not d.get("name"):
         d["name"] = src["name"]
-    if str(src.get("tribe") or "") == "vengir" and str(d.get("tribe") or "") == "oumaji":
+    src_tribe = str(src.get("tribe") or "")
+    dst_tribe = str(d.get("tribe") or "")
+    # Keep frost-plate Disrof as enemy. A later grey-stone sample must not
+    # invent cities_own from the same city_id.
+    if src_tribe == "vengir" and str(src.get("owner") or "") == "enemy":
+        if dst_tribe in {"oumaji", "bardur", "unknown", ""}:
+            d["tribe"] = "vengir"
+            d["owner"] = "enemy"
+    elif src_tribe == "vengir" and dst_tribe == "oumaji":
         d["tribe"] = "vengir"
         d["owner"] = "own" if str(src.get("owner") or "") == "own" else "enemy"
+    cid = str(d.get("id") or src.get("id") or "")
+    if cid:
+        d["id"] = cid
+        d["city_id"] = cid
 
 
 def stabilize(
@@ -369,13 +395,16 @@ def observe(shot: Any | None = None, mode: str = "full") -> dict[str, Any]:
     # City ids are grid hashes (c{gx}_{gy}); never reindex as c0/c1.
     # Keep unmatched previous cities so attack/move/capture still resolve.
     # Recap unnamed Vengir so frost FPs do not grow 2→4→7 across the session.
-    cities = entities.session_cities(
-        stabilize(
-            list(mapped_cities),
-            (prev or {}).get("cities"),
-            keep_missing=True,
+    cities = [
+        _stamp_city_id(c)
+        for c in entities.session_cities(
+            stabilize(
+                list(mapped_cities),
+                (prev or {}).get("cities"),
+                keep_missing=True,
+            )
         )
-    )
+    ]
     register_cities(cities)
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
