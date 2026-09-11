@@ -91,7 +91,7 @@ Skopiuj `mcp.example.json` do `~/.cursor/mcp.json` albo zostaw `.cursor/mcp.json
 `GET /observe` (screen pixels, `hits_space: "screen"`):
 
 - `units[]` — HP-bar, `id` `u0`…, `tribe` / `owner`
-- `cities` / `cities_own` / `cities_enemy` — Moonrise **frosted** nameplate (szary ~180, nie 215-white) + kolor plemienia. `id` = `c{gx}_{gy}`, pole `tile`. Vengir = fioletowy dach; **złote okna / gwiazdka poziomu ≠ Oumaji**. Jasny oumaji-looking bez purple/gold-on-dark odpada. `name` z OCR środka płytki (nie ikona/gwiazda). Lookup po `city_id` albo nazwie. Enemy zostaje bez nazwy.
+- `cities` / `cities_own` / `cities_enemy` — Moonrise **frosted** nameplate (szary ~180, nie 215-white) + kolor plemienia. `id` = `c{gx}_{gy}`, pole `tile`. Vengir = fioletowy dach **albo złote okna na frost plate** (nie drop jako Oumaji). Jasny oumaji-looking na gorącej białej płytce odpada. `name` opcjonalne (OCR płytek jest pomijane gdy plemię już znane — `/attack` <8s). Lookup po `city_id`.
 - `POST /move-to` — niebieskie marki po select `from_id`; cel = środek budynku (~`plate_y` minus ~0.75 hex). `stood_on_city` po re-observe.
 - `POST /capture` — gate ON tile (<0.4 hex) **oraz** `unit.capture` / blob w UNIT_CROP. Bez tego `not_standing_on_city`, zero klików. `captured` gdy `cities_enemy` straci ten `city_id` albo owner→own. Hałaśliwe mapowe `do_it_blobs` **nie** klikają.
 - `attack_marks[]` — czerwone hexy ataku
