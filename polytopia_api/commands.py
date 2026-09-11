@@ -212,32 +212,31 @@ def _recruit_click_points(
 ) -> list[tuple[int, int, str]]:
     """Clicks that SELECT THE CITY (TRAIN panel), not a unit on the tile (Disband).
 
-    Nameplate / roof open the city. The standable hex and walk foot select a
+    Roof / nameplate open the city. The standable hex and walk foot select a
     garrison (live 99876c5: tile-first still returned TRAIN not visible).
     Never click the foot — that is Disband. Skip the tile when occupied.
     """
+    x = int(hit["x"])
+    plate = int(hit.get("plate_y") or hit["y"])
+    building = int(hit["y"])
     points: list[tuple[int, int, str]] = []
     seen: set[tuple[int, int]] = set()
 
-    def _add(x: int, y: int, where: str) -> None:
-        key = (int(x), int(y))
+    def _add(px: int, py: int, where: str) -> None:
+        key = (int(px), int(py))
         if coords.in_dock_zone(key[0], key[1]):
             return
-        if any(abs(key[0] - px) < 6 and abs(key[1] - py) < 6 for px, py in seen):
+        if any(abs(key[0] - sx) < 6 and abs(key[1] - sy) < 6 for sx, sy in seen):
             return
         points.append((key[0], key[1], where))
         seen.add(key)
 
-    x = int(hit["x"])
-    plate = int(hit.get("plate_y") or hit["y"])
-    building = int(hit["y"])
     tile = combat.city_tile_center(hit, frame)
-    # Nameplate first — that is the city, not the occupant sprite.
+    if tile:
+        _add(tile[0], max(0, tile[1] - 10), "roof")
     _add(x, plate, "plate")
     _add(x, max(0, plate - 10), "plate_above")
     _add(x - 14, plate, "plate_left")
-    if tile:
-        _add(tile[0], max(0, tile[1] - 10), "roof")
     _add(x, building, "building")
     occupied = False
     if obs is not None:

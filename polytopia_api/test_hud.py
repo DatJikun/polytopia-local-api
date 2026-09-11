@@ -1984,8 +1984,8 @@ def test_recruit_uses_marks_observe_for_train():
     reset_obs()
 
 
-def test_recruit_clicks_nameplate_not_foot():
-    """Nameplate/roof open TRAIN. Foot/tile-first selected Disband on live 99876c5."""
+def test_recruit_clicks_roof_then_train():
+    """Roof then nameplate open TRAIN. Foot/tile-first selected Disband on live 99876c5."""
     from unittest.mock import patch
 
     from polytopia_api import commands
@@ -2025,6 +2025,10 @@ def test_recruit_clicks_nameplate_not_foot():
         clicks.append((int(x), int(y)))
         return {"ok": True, "x": int(x), "y": int(y)}
 
+    pts = commands._recruit_click_points(city, (1280, 800), None)
+    assert pts and pts[0][2] in {"roof", "building", "plate"}, pts
+    assert "tile" not in [p[2] for p in pts[:3]], pts
+
     with patch.object(commands, "remember", return_value=None), patch.object(
         commands, "observe", side_effect=fake_observe
     ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
@@ -2032,7 +2036,7 @@ def test_recruit_clicks_nameplate_not_foot():
     assert r["ok"] is True, r
     assert (184, 740) in clicks
     wheres = [t.get("where") for t in (r.get("tried") or [])]
-    assert wheres and wheres[0] in {"plate", "plate_above", "plate_left", "roof"}, r
+    assert wheres and wheres[0] in {"roof", "building", "plate"}, r
     assert "city_foot" not in wheres
     assert "plate_below" not in wheres
     reset_obs()
@@ -2264,7 +2268,7 @@ def test_recruit_waits_for_train_after_nameplate():
     assert r["ok"] is True, r
     assert (176, 738) in clicks
     wheres = [t.get("where") for t in (r.get("tried") or [])]
-    assert wheres[0] == "plate", r
+    assert wheres[0] in {"roof", "plate"}, r
     assert "city_foot" not in wheres
     reset_obs()
 
@@ -4461,7 +4465,7 @@ if __name__ == "__main__":
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
-    test_recruit_clicks_nameplate_not_foot()
+    test_recruit_clicks_roof_then_train()
     test_recruit_backs_off_disband_then_clicks_train()
     test_recruit_clicks_brand_blue_panel_pill()
     test_recruit_clicks_train_despite_leftover_unit_ocr()
