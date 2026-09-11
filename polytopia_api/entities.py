@@ -609,19 +609,39 @@ def _building_column(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tup
     return x0, x1, y0, y1
 
 
-def _warm_bardur_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
-    """Bardur longhouse wood is warm grey. Cool mountain stone is not a city."""
+def _bardur_wood_stats(
+    arr: np.ndarray, cx: int, cy: int, bw: int, up: int
+) -> tuple[int, int, int, float]:
+    """Warm Bardur wood in the building column: (n, width, height, density).
+
+    A longhouse is a tall dense block. A unit-on-snow or mountain speck is
+    short/sparse (live T46 mid-map phantoms c12_16 / c17_14).
+    """
     x0, x1, y0, y1 = _building_column(arr, cx, cy, bw, up)
     crop = arr[y0:y1, x0:x1]
     if crop.size == 0:
-        return 0
+        return 0, 0, 0, 0.0
+    xs: list[int] = []
+    ys: list[int] = []
     n = 0
     for py in range(crop.shape[0]):
         for px in range(crop.shape[1]):
             r, g, b = (int(v) for v in crop[py, px][:3])
             if classify_tribe((r, g, b)) == "bardur" and r >= b - 4:
                 n += 1
-    return n
+                xs.append(px)
+                ys.append(py)
+    if n == 0:
+        return 0, 0, 0, 0.0
+    ww = max(xs) - min(xs) + 1
+    wh = max(ys) - min(ys) + 1
+    dens = n / float(crop.shape[0] * crop.shape[1])
+    return n, ww, wh, dens
+
+
+def _warm_bardur_pixels(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> int:
+    """Bardur longhouse wood is warm grey. Cool mountain stone is not a city."""
+    return _bardur_wood_stats(arr, cx, cy, bw, up)[0]
 
 
 def _column_tribe(arr: np.ndarray, cx: int, cy: int, bw: int, up: int) -> tuple[str, list[int]]:
@@ -874,16 +894,29 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         own = tribe == _own_tribe()
         warm_n = 0
+        wood_w = 0
+        wood_h = 0
+        wood_dens = 0.0
         if own:
             # Ufla-class: Bardur wood under a frost/hot plate. Gold star preferred
             # but a lettered full plate still counts when the star clustered onto a
             # neighbor. Fruit-gold / cool mountain / tiny frost splits are ghosts.
-            warm_n = _warm_bardur_pixels(arr, cx, cy, bw, up)
+            warm_n, wood_w, wood_h, wood_dens = _bardur_wood_stats(arr, cx, cy, bw, up)
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
             # Longhouse wood is thousands of pixels. Sparse mountain/forest
             # next to a frost streak was the T46 mid-map phantom c12_16
-            # (warm_n≈345 vs Bufla/Orkork ≈1600+).
+            # (warm_n≈345 vs Bufla/Orkork ≈1600+). A unit-sized frost plate
+            # (c17_14, warm_n≈992) still needs wood *shape* — tall/dense.
             if not wood or warm_n < 500:
+                continue
+            if not _own_wood_looks_like_building(
+                {
+                    "warm_n": warm_n,
+                    "wood_w": wood_w,
+                    "wood_h": wood_h,
+                    "wood_dens": wood_dens,
+                }
+            ):
                 continue
             if not marks and not lettered:
                 continue
@@ -952,6 +985,10 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
                 "rgb": rgb,
                 "roof_n": roof_n,
                 "gold_n": gold_n,
+                "warm_n": warm_n,
+                "wood_w": wood_w,
+                "wood_h": wood_h,
+                "wood_dens": wood_dens,
             }
         )
     cities.sort(
@@ -996,6 +1033,12 @@ def _with_city_extras(win: dict[str, Any], lose: dict[str, Any]) -> dict[str, An
         out["n"] = lose["n"]
     if int(lose.get("w") or 0) > int(out.get("w") or 0):
         out["w"] = lose["w"]
+    if int(lose.get("warm_n") or 0) > int(out.get("warm_n") or 0):
+        out["warm_n"] = lose["warm_n"]
+    if int(lose.get("wood_h") or 0) > int(out.get("wood_h") or 0):
+        out["wood_h"] = lose["wood_h"]
+        out["wood_w"] = lose.get("wood_w", out.get("wood_w"))
+        out["wood_dens"] = lose.get("wood_dens", out.get("wood_dens"))
     return out
 
 
@@ -1156,18 +1199,41 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
     return False
 
 
+def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
+    """Longhouse vs unit-on-snow / mountain frost (live T46 c12_16 / c17_14).
+
+    Dict fixtures from tests omit wood_* — treat those as already-vetted cities.
+    Thresholds are in screenshot pixels (works on 1280 and 1920) so we do not
+    depend on coords.frame() leftover from a previous test.
+    """
+    if c.get("wood_h") is None and c.get("warm_n") is None and c.get("wood_dens") is None:
+        return True
+    wh = int(c.get("wood_h") or 0)
+    ww = int(c.get("wood_w") or 0)
+    dens = float(c.get("wood_dens") or 0)
+    # Centered longhouse (1280 scaled ~40×40 dens≥0.5; 1920 ~60×47 dens≥0.8).
+    if dens >= 0.45 and wh >= 34 and ww >= 24:
+        return True
+    # Off-center sample of a real longhouse: tall wood, narrower column.
+    if dens >= 0.25 and wh >= 48 and ww >= 14:
+        return True
+    return False
+
+
 def _is_real_own_hit(c: dict[str, Any]) -> bool:
     """Ufla-class Bardur: frost plate + gold star (or roof lamps). Bare frost is a ghost.
 
     Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). Observe listed
-    5–7 unnamed phantoms, then 4 after HUD drop (Orkork split + mid-map
-    c12_16). Sparse-wood frost plates are dropped in find_cities.
+    5 after HUD drop (Orkork split + mid-map c12_16 / unit-frost c17_14).
+    Sparse-wood and unit-sized frost plates are dropped in find_cities.
     """
     if c.get("owner") != "own":
         return False
     if _own_hit_in_top_chrome(c):
         return False
     if c.get("warm_n") is not None and int(c.get("warm_n") or 0) < 500:
+        return False
+    if not _own_wood_looks_like_building(c):
         return False
     name = str(c.get("name") or "").strip()
     if len(name) >= 4:
@@ -1220,7 +1286,7 @@ MAX_CITIES_OWN = 24
 
 
 def _drop_own_phantoms(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop unnamed / low-evidence / HUD-fog own cities (c15_15, c18_1)."""
+    """Drop unnamed / low-evidence / HUD-fog / unit-sized own cities (c12_16, c17_14)."""
     out: list[dict[str, Any]] = []
     for c in cities:
         if c.get("owner") == "own" and not _is_real_own_hit(c):

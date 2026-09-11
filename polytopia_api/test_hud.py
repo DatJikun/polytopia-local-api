@@ -609,6 +609,14 @@ def _draw_mid_map_own_phantom(d, cx: int = 441, plate_y: int = 480) -> None:
     d.ellipse((cx + 28, plate_y - 4, cx + 42, plate_y + 8), fill=(224, 188, 63))
 
 
+def _draw_unit_frost_phantom(d, cx: int, plate_y: int) -> None:
+    """Unit-sized wood + frost + gold star — live c17_14 @(610,379), warm_n≈992."""
+    d.rectangle((cx - 16, plate_y - 40, cx + 16, plate_y - 8), fill=(90, 85, 80))
+    d.rectangle((cx - 36, plate_y - 6, cx + 36, plate_y + 10), fill=(180, 180, 178))
+    d.ellipse((cx + 18, plate_y - 4, cx + 32, plate_y + 8), fill=(224, 188, 63))
+    d.rectangle((cx - 28, plate_y - 2, cx - 22, plate_y + 6), fill=(40, 40, 40))
+
+
 def _draw_disrof_city(d, cx: int, plate_y: int, lamps: bool = True, roof: bool = True) -> None:
     """Moonrise Disrof: dark stone + magenta roof and/or gold window lamps."""
     d.rectangle((cx - 35, plate_y - 82, cx + 35, plate_y - 20), fill=(90, 85, 80))
@@ -1887,10 +1895,11 @@ def test_three_bardur_not_hud_fog_c18_1():
 
 
 def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
-    """Live T46 after #31: Game Stats Bardur 2; observe listed 4.
+    """Live T46 after #31/#32: Game Stats Bardur 2; observe listed 4–5.
 
-    Leftover junk: Orkork c15_24@(541,657)+c16_24@(574,667) ~35px, and mid-map
-    phantom c12_16@(441,455). Grugru is Vengir, not a third Bardur city.
+    Leftover junk: Orkork c15_24@(541,657)+c16_24@(574,667) ~35px, sparse
+    c12_16@(441,455), and unit-frost c17_14@(610,379) with warm_n≈992 (beats
+    the 500 floor). Grugru is Vengir, not a third Bardur city.
     """
     from polytopia_api.detect import as_rgb
     from polytopia_api.entities import observe_map, session_cities
@@ -1902,6 +1911,7 @@ def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
     _draw_bardur_city(d, 250, 280)  # Bufla
     _draw_orkork_split_plate(d)
     _draw_mid_map_own_phantom(d)
+    _draw_unit_frost_phantom(d, 610, 400)  # c17_14-class, warm enough to beat 500
     _draw_bardur_city(d, 648, 64)  # HUD/fog c18_1
     _draw_disrof_city(d, 980, 260)
     _draw_disrof_city(d, 1100, 420)
@@ -1915,6 +1925,7 @@ def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
     assert any(abs(x - 250) < 40 for x in xs), own
     assert any(abs(x - 557) < 50 for x in xs), own
     assert all(not (abs(int(c["x"]) - 441) < 30 and abs(int(c["y"]) - 455) < 40) for c in own), own
+    assert all(abs(int(c["x"]) - 610) > 40 or abs(int(c.get("plate_y") or c["y"]) - 400) > 40 for c in own), own
     assert all(int(c.get("y") or 0) > 96 for c in own), own
     vengir = [c for c in mapped["cities_enemy"] if c.get("tribe") == "vengir"]
     assert vengir, mapped["cities"]
@@ -1951,12 +1962,40 @@ def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
         "x": 441, "y": 455, "plate_y": 480, "tile": [12, 16], "n": 1144, "w": 61,
         "warm_n": 345, "seen": True,
     }
-    out = session_cities([bufla, left, right, phantom])
+    unit_frost = {
+        "id": "c17_14", "city_id": "c17_14", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 610, "y": 379, "plate_y": 400, "tile": [17, 14], "n": 893, "w": 59,
+        "warm_n": 992, "wood_w": 25, "wood_h": 23, "wood_dens": 0.17, "seen": True,
+    }
+    out = session_cities([bufla, left, right, phantom, unit_frost])
     own_ids = {c["id"] for c in out if c.get("owner") == "own"}
     assert "c7_16" in own_ids, out
     assert not ({"c15_24", "c16_24"} <= own_ids), out
-    assert "c12_16" not in own_ids, out
+    assert "c12_16" not in own_ids and "c17_14" not in own_ids, out
     assert len([c for c in out if c.get("owner") == "own"]) == 2, out
+
+
+def test_unit_frost_c17_14_not_cities_own():
+    """#32 warm_n>=500 still counted unit-on-snow as own. Wood shape drops it."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 252, 470)
+    _draw_bardur_city(d, 541, 690)
+    _draw_unit_frost_phantom(d, 610, 400)
+    _draw_disrof_city(d, 980, 260)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(abs(int(c["x"]) - 610) > 40 or abs(int(c.get("plate_y") or c["y"]) - 400) > 40 for c in own), own
+    vengir = [c for c in mapped["cities_enemy"] if c.get("tribe") == "vengir"]
+    assert vengir, mapped["cities"]
 
 
 def test_two_bardur_match_screen_not_frost_phantoms():
@@ -4602,6 +4641,7 @@ if __name__ == "__main__":
     test_two_bardur_match_screen_not_frost_phantoms()
     test_three_bardur_not_hud_fog_c18_1()
     test_two_bardur_dedupe_orkork_split_and_mid_phantom()
+    test_unit_frost_c17_14_not_cities_own()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
