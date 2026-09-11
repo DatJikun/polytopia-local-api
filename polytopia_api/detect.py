@@ -236,14 +236,16 @@ def find_capture_panel_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def find_train_panel_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
-    """TRAIN is in the same bottom-left city panel as Capture, not the map modal crop."""
+    """TRAIN is in UNIT_CROP. City-panel TRAIN is often brand-blue (same as Capture)."""
     h, w = arr.shape[:2]
     y0, y1 = int(h * 0.78), h
     x0, x1 = 0, int(w * 0.52)
     region = arr[y0:y1, x0:x1]
     if region.size == 0:
         return []
-    m = np.all((region >= TRAIN_LO) & (region <= TRAIN_HI), axis=2)
+    m_train = np.all((region >= TRAIN_LO) & (region <= TRAIN_HI), axis=2)
+    m_doit = np.all((region >= DOIT_LO) & (region <= DOIT_HI), axis=2)
+    m = m_train | m_doit
     ys, xs = np.where(m)
     rad, mn = _cluster_params(arr, 28, 40)
     clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(24, rad))

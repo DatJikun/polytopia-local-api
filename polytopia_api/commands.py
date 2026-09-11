@@ -205,22 +205,25 @@ def _city_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
     return points
 
 
-def _recruit_click_points(hit: dict[str, Any], frame: tuple[int, int]) -> list[tuple[int, int, str]]:
-    """City tile/foot first — that opens TRAIN. Plate is a fallback.
+def _recruit_click_points(
+    hit: dict[str, Any],
+    frame: tuple[int, int],
+    obs: dict[str, Any] | None = None,
+) -> list[tuple[int, int, str]]:
+    """Clicks that SELECT THE CITY (TRAIN panel), not a unit on the tile (Disband).
 
-    Live T46: plate/building/plate_below ran and TRAIN stayed hidden; the
-    city tile opened the UNIT_CROP pill. Trying plate first burned the <8s
-    budget before the tile click.
+    Roof / nameplate open the city. The walk foot selects a garrison/occupant.
+    Live: plate/building/below then foot still returned TRAIN not visible —
+    prefer the roof first, skip the foot when a unit is already on the hex.
     """
-    x = int(hit["x"])
-    plate = int(hit.get("plate_y") or hit["y"])
-    building = int(hit["y"])
     points: list[tuple[int, int, str]] = []
     seen: set[tuple[int, int]] = set()
 
-    def _add(px: int, py: int, where: str) -> None:
-        key = (int(px), int(py))
-        if any(abs(key[0] - sx) < 6 and abs(key[1] - sy) < 6 for sx, sy in seen):
+    def _add(x: int, y: int, where: str) -> None:
+        key = (int(x), int(y))
+        if coords.in_dock_zone(key[0], key[1]):
+            return
+        if any(abs(key[0] - px) < 6 and abs(key[1] - py) < 6 for px, py in seen):
             return
         points.append((key[0], key[1], where))
         seen.add(key)
@@ -228,14 +231,52 @@ def _recruit_click_points(hit: dict[str, Any], frame: tuple[int, int]) -> list[t
     tile = combat.city_tile_center(hit, frame)
     if tile:
         _add(tile[0], tile[1], "tile")
-    foot = combat.city_walk_center(hit, frame)
-    if foot:
-        _add(foot[0], foot[1], "city_foot")
+        _add(tile[0], max(0, tile[1] - 8), "roof")
+    x = int(hit["x"])
+    building = int(hit["y"])
+    _add(x, building, "building")
+    plate = int(hit.get("plate_y") or hit["y"])
     _add(x, plate, "plate")
-    if abs(building - plate) >= 6:
-        _add(x, building, "building")
-    _add(x, plate + 10, "plate_below")
+    _add(x, max(0, plate - 8), "plate_above")
+    _add(x - 12, plate, "plate_left")
+    occupied = False
+    if obs is not None:
+        garrison = combat.garrison_unit(obs.get("units") or [], hit, frame, max_hex=0.9)
+        occupied = garrison is not None
+    if not occupied:
+        foot = combat.city_walk_center(hit, frame)
+        if foot:
+            _add(foot[0], foot[1], "city_foot")
     return points
+
+
+def _recruit_panel_block(obs: dict[str, Any] | None) -> str | None:
+    """Settings / Tech / Disband / unit panel — not the city TRAIN panel."""
+    panel = (obs or {}).get("unit") or {}
+    raw = str(panel.get("raw") or "").lower()
+    if panel.get("settings") or "settings" in raw:
+        return "settings"
+    if panel.get("disband") or "disband" in raw:
+        return "disband"
+    if "tech tree" in raw or "technology" in raw:
+        return "tech"
+    if panel.get("train"):
+        return None
+    if panel.get("can_move") or panel.get("no_actions") or panel.get("unit"):
+        return "unit"
+    if panel.get("capture"):
+        return "capture"
+    return None
+
+
+def _dismiss_recruit_block(reason: str | None) -> None:
+    if not reason:
+        return
+    try:
+        driver.back()
+        _sleep(0.18)
+    except Exception:
+        pass
 
 
 def _panel_train_blobs(obs: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -2031,17 +2072,34 @@ def attack(
     }
 
 
-def recruit_target(obs: dict[str, Any]) -> tuple[int, int] | None:
-    """Prefer a UNIT_CROP TRAIN pill. Never click scaled TRAIN (map at 1280)."""
-    panel = _panel_train_blobs(obs)
+def _safe_panel_xy(x: int, y: int, frame: tuple[int, int]) -> bool:
+    """TRAIN / confirm live in UNIT_CROP. Never Tech dock or map TRAIN."""
+    try:
+        if coords.in_dock_zone(int(x), int(y)):
+            return False
+    except Exception:
+        return False
+    return _in_unit_panel(int(x), int(y), frame)
+
+
+def recruit_target(obs: dict[str, Any], city_open: bool = False) -> tuple[int, int] | None:
+    """UNIT_CROP TRAIN pill only. Never scaled TRAIN, Tech, or Disband."""
+    frame = _frame(obs)
+    overlay = obs.get("overlay") or {}
+    panel = list(_panel_train_blobs(obs))
+    if city_open:
+        # Own-city TRAIN is often brand-blue (same cluster as Capture/DO IT).
+        for b in list(overlay.get("capture_blobs") or []) + list(overlay.get("do_it_blobs") or []):
+            try:
+                if _safe_panel_xy(int(b["x"]), int(b["y"]), frame):
+                    panel.append(b)
+            except (KeyError, TypeError, ValueError):
+                continue
     if panel:
         best = max(panel, key=lambda b: int(b.get("n") or 0))
-        return int(best["x"]), int(best["y"])
-    overlay = obs.get("overlay") or {}
-    blobs = overlay.get("train_blobs") or []
-    if blobs:
-        best = max(blobs, key=lambda b: int(b.get("n") or 0))
-        return int(best["x"]), int(best["y"])
+        x, y = int(best["x"]), int(best["y"])
+        if _safe_panel_xy(x, y, frame):
+            return x, y
     unit = obs.get("unit") or {}
     ready = obs.get("ready") or {}
     if unit.get("train") or ready.get("train"):
@@ -2050,7 +2108,9 @@ def recruit_target(obs: dict[str, Any]) -> tuple[int, int] | None:
             x0, y0, x1, y1 = coords.crop_box("UNIT_CROP")
         except Exception:
             return None
-        return int(x0 + (x1 - x0) * 0.30), int(y0 + (y1 - y0) * 0.42)
+        x, y = int(x0 + (x1 - x0) * 0.30), int(y0 + (y1 - y0) * 0.42)
+        if _safe_panel_xy(x, y, frame):
+            return x, y
     return None
 
 
@@ -2062,10 +2122,10 @@ def recruit(
     unit: str | None = None,
     space: str = "screen",
 ) -> dict[str, Any]:
-    """Select city_id (tile/foot first, plate fallback) and click a detected TRAIN blob.
+    """Click own city so TRAIN appears, then the UNIT_CROP TRAIN / confirm pill.
 
-    Live: full HUD observe after every plate click blew the HTTP budget.
-    Marks-mode overlay still sees TRAIN pills; stop under ~8s like /attack.
+    Roof/nameplate select the city. Never Disband, never Tech/dock.
+    Marks-mode overlay; stop under ~8s like /attack.
     """
     t0 = time.time()
 
@@ -2079,12 +2139,15 @@ def recruit(
     tried: list[dict[str, Any]] = []
     opened = None
     last_obs = remember()
+    dismissed: list[str] = []
     points: list[tuple[int, int, str]] = []
     if hit:
-        points = _recruit_click_points(hit, _frame(last_obs))
+        points = _recruit_click_points(hit, _frame(last_obs), last_obs)
     elif x is not None and y is not None:
-        points = [(int(x), int(y), "xy")]
+        if not coords.in_dock_zone(int(x), int(y)):
+            points = [(int(x), int(y), "xy")]
     target: tuple[int, int] | None = None
+    confirmed = False
 
     def _timeout(reason: str = "timeout", **extra: Any) -> dict[str, Any]:
         return {
@@ -2096,15 +2159,31 @@ def recruit(
             "hit": hit,
             "tried": tried,
             "opened": opened,
+            "dismissed": dismissed,
             "elapsed_s": _elapsed(),
             **extra,
         }
+
+    def _overlay_bits(obs: dict[str, Any] | None) -> dict[str, Any]:
+        overlay = (obs or {}).get("overlay") or {}
+        return {
+            "train_pixel": overlay.get("train_pixel"),
+            "train_blobs": overlay.get("train_blobs"),
+            "train_rgb": overlay.get("train_rgb"),
+        }
+
+    # A leftover unit/Settings panel hides TRAIN — BACK once, then click the city.
+    block0 = _recruit_panel_block(last_obs)
+    if block0 and _elapsed() < RECRUIT_BUDGET_S - 1.5:
+        _dismiss_recruit_block(block0)
+        dismissed.append(block0)
+        last_obs = remember()
 
     if not points:
         if _elapsed() >= RECRUIT_BUDGET_S:
             return _timeout()
         last_obs = last_obs or observe(mode="marks")
-        target = recruit_target(last_obs)
+        target = recruit_target(last_obs, city_open=True)
         if target is None:
             return {
                 "ok": False,
@@ -2114,11 +2193,7 @@ def recruit(
                 "elapsed_s": _elapsed(),
                 "unit_panel": last_obs.get("unit"),
                 "ready": last_obs.get("ready"),
-                "overlay": {
-                    "train_pixel": (last_obs.get("overlay") or {}).get("train_pixel"),
-                    "train_blobs": (last_obs.get("overlay") or {}).get("train_blobs"),
-                    "train_rgb": (last_obs.get("overlay") or {}).get("train_rgb"),
-                },
+                "overlay": _overlay_bits(last_obs),
             }
     for cx, cy, where in points:
         if _elapsed() >= RECRUIT_BUDGET_S:
@@ -2128,14 +2203,26 @@ def recruit(
             "where": where,
             "city_id": ident,
         }
-        _sleep(0.35)
+        _sleep(0.28)
         if _elapsed() >= RECRUIT_BUDGET_S:
             return _timeout()
         last_obs = observe(mode="marks")
-        target = recruit_target(last_obs)
-        tried.append({"where": where, "x": cx, "y": cy, "train": target is not None})
+        block = _recruit_panel_block(last_obs)
+        city_open = block is None
+        target = recruit_target(last_obs, city_open=city_open)
+        tried.append({
+            "where": where,
+            "x": cx,
+            "y": cy,
+            "train": target is not None,
+            "block": block,
+        })
         if target is not None:
             break
+        if block and _elapsed() < RECRUIT_BUDGET_S - 1.0:
+            _dismiss_recruit_block(block)
+            dismissed.append(block)
+            last_obs = remember() or last_obs
     if target is None:
         return {
             "ok": False,
@@ -2145,20 +2232,46 @@ def recruit(
             "hit": hit,
             "tried": tried,
             "opened": opened,
+            "dismissed": dismissed,
             "elapsed_s": _elapsed(),
             "unit_panel": (last_obs or {}).get("unit"),
             "ready": (last_obs or {}).get("ready"),
-            "overlay": {
-                "train_pixel": ((last_obs or {}).get("overlay") or {}).get("train_pixel"),
-                "train_blobs": ((last_obs or {}).get("overlay") or {}).get("train_blobs"),
-                "train_rgb": ((last_obs or {}).get("overlay") or {}).get("train_rgb"),
-            },
+            "overlay": _overlay_bits(last_obs),
+        }
+    if not _safe_panel_xy(target[0], target[1], _frame(last_obs)):
+        return {
+            "ok": False,
+            "name": "recruit",
+            "reason": "TRAIN click would miss UNIT_CROP (Tech/Disband/map)",
+            "city_id": ident,
+            "hit": hit,
+            "tried": tried,
+            "opened": opened,
+            "elapsed_s": _elapsed(),
         }
     clicked = _click(target[0], target[1], space="screen")
-    _sleep(0.35)
+    _sleep(0.28)
     after = last_obs or remember() or {}
-    if _elapsed() < RECRUIT_BUDGET_S - 0.8:
+    if _elapsed() < RECRUIT_BUDGET_S - 0.7:
         after = observe(mode="marks")
+    # Second pill only if TRAIN was replaced by a confirm (never Tech/Disband).
+    panel_after = after.get("unit") or {}
+    if (
+        not panel_after.get("train")
+        and not _recruit_panel_block(after)
+        and _elapsed() < RECRUIT_BUDGET_S - 0.4
+    ):
+        confirm_at = recruit_target(after, city_open=True)
+        if (
+            confirm_at
+            and _safe_panel_xy(confirm_at[0], confirm_at[1], _frame(after))
+            and (abs(confirm_at[0] - clicked["x"]) > 10 or abs(confirm_at[1] - clicked["y"]) > 10)
+        ):
+            clicked = _click(confirm_at[0], confirm_at[1], space="screen")
+            confirmed = True
+            _sleep(0.22)
+            if _elapsed() < RECRUIT_BUDGET_S - 0.5:
+                after = observe(mode="marks")
     return {
         "ok": True,
         "name": "recruit",
@@ -2167,6 +2280,8 @@ def recruit(
         "y": clicked["y"],
         "want_unit": unit,
         "tried": tried,
+        "dismissed": dismissed,
+        "confirmed": confirmed,
         "elapsed_s": _elapsed(),
         "hint": "radial portraits are on the map; click one after TRAIN",
         "opened": opened,
