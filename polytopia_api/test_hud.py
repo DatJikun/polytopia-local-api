@@ -2776,6 +2776,149 @@ def test_move_to_adjacent_empty_marks_clicks_city_foot():
     reset_obs()
 
 
+def test_move_to_waits_for_walk_then_stood_on_city():
+    """Live T41: city_foot click returned not_stood_on_city while the sprite was still adjacent."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, register_units, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    register_units([{"id": "u36", "kind": "unit", "x": 164, "y": 80, "owner": "own"}])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    foot = {"id": "m_foot", "x": 200, "y": 104, "n": 22}
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [foot],
+        "units": [{"id": "u36", "x": 164, "y": 80, "owner": "own", "seen": True}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior", "settings": False},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    stood = {
+        **before,
+        "move_marks": [],
+        "units": [{"id": "u36", "x": 201, "y": 94, "owner": "own", "seen": True}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    observes = [before, stood]
+    selects = {"n": 0}
+
+    def fake_observe(mode="full"):
+        nxt = observes.pop(0) if observes else stood
+        return nxt
+
+    def fake_select(**_kw):
+        selects["n"] += 1
+        return {"ok": True, "unit": before["unit"]}
+
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "select_unit", side_effect=fake_select), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u36", city_id="c5_3")
+    assert clicks and clicks[0] == (200, 104), clicks
+    assert (200, 80) not in clicks
+    assert selects["n"] == 1, selects
+    assert r.get("stand_retried") is False, r
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    reset_obs()
+
+
+def test_move_to_reselects_when_foot_click_stays_adjacent():
+    """Foot click + wait still adjacent → re-select and click the ring again until ON tile."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, register_units, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    register_units([{"id": "u36", "kind": "unit", "x": 164, "y": 80, "owner": "own"}])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    foot = {"x": 200, "y": 104, "n": 22}
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [foot],
+        "units": [{"id": "u36", "x": 164, "y": 80, "owner": "own", "seen": True}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior", "settings": False},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    reselected = {
+        **before,
+        "move_marks": [foot],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+    }
+    stood = {
+        **before,
+        "move_marks": [],
+        "units": [{"id": "u36", "x": 201, "y": 94, "owner": "own", "seen": True}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    mem = {"state": before}
+    observes = {"n": 0}
+    selects = {"n": 0}
+
+    def fake_remember():
+        return mem["state"]
+
+    def fake_observe(mode="full"):
+        observes["n"] += 1
+        if selects["n"] >= 2:
+            mem["state"] = stood
+            return stood
+        return before
+
+    def fake_select(**_kw):
+        selects["n"] += 1
+        if selects["n"] >= 2:
+            mem["state"] = reselected
+            return {"ok": True, "unit": reselected["unit"]}
+        return {"ok": True, "unit": before["unit"]}
+
+    with patch.object(commands, "remember", side_effect=fake_remember), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "select_unit", side_effect=fake_select), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u36", city_id="c5_3")
+    assert selects["n"] >= 2, selects
+    assert r.get("stand_retried") is True, r
+    assert clicks and all(c[1] > 81 for c in clicks), clicks
+    assert (200, 80) not in clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    reset_obs()
+
+
 def test_second_move_to_resolves_sticky_city_id():
     """Live T39: follow-up u4→c14_24 said need x,y despite passing city_id."""
     from unittest.mock import patch
@@ -2915,6 +3058,8 @@ if __name__ == "__main__":
     test_move_to_clicks_foot_not_roof_centroid()
     test_city_occupied_attack_then_stand_and_capture()
     test_move_to_adjacent_empty_marks_clicks_city_foot()
+    test_move_to_waits_for_walk_then_stood_on_city()
+    test_move_to_reselects_when_foot_click_stays_adjacent()
     test_second_move_to_resolves_sticky_city_id()
     test_lookup_city_id_ignores_units()
     print("ok")
