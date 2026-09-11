@@ -2385,6 +2385,17 @@ def _draw_dark_vengir_frost_star(d, cx: int, plate_y: int) -> None:
     d.ellipse((cx + 34, plate_y - 6, cx + 50, plate_y + 8), fill=(224, 188, 63))
 
 
+def _draw_dark_vengir_with_wood_specks(d, cx: int, plate_y: int) -> None:
+    """c14_23 after #42: wine walls plus enough Bardur-looking specks to set wood=True.
+
+    The gold_n<24 own gate then dropped the city from both lists. Salvage as enemy.
+    """
+    _draw_dark_vengir_frost_star(d, cx, plate_y)
+    for i in range(6):
+        yy = plate_y - 70 + i * 8
+        d.rectangle((cx - 6, yy, cx + 2, yy + 3), fill=(90, 85, 80))
+
+
 def test_kissing_grey_stone_and_disrof_stay_two_enemy():
     """Live after #40: c12_16 flipped to enemy but cities_enemy stayed 4 vs 5.
 
@@ -2478,6 +2489,84 @@ def test_dark_vengir_frost_star_counts_as_enemy():
     assert any(abs(int(c["x"]) - 200) < 50 for c in vengir), enemy
 
 
+def test_dark_vengir_wood_specks_stay_enemy_not_dropped():
+    """Live after #42: c14_23 wine + Bardur specks vanished (enemy 5→4)."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import (
+        _is_real_own_hit,
+        _own_miss_is_dark_vengir,
+        observe_map,
+        session_cities,
+    )
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    rec = {
+        "warm_n": 160, "wood_w": 30, "wood_h": 54, "wood_dens": 0.11, "gold_n": 9,
+    }
+    assert _own_miss_is_dark_vengir(
+        rec, sampled_tribe="vengir", col_tribe="bardur", frost_plate=True, marks=True,
+    )
+    assert not _own_miss_is_dark_vengir(
+        rec, sampled_tribe="bardur", col_tribe="bardur", frost_plate=True, marks=True,
+    )
+    orkork_low_gold = {
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 9, "seen": True,
+    }
+    assert _is_real_own_hit(orkork_low_gold)
+
+    dark = {
+        "id": "c14_23", "city_id": "c14_23", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood", "dark_vengir"],
+        "x": 500, "y": 620, "plate_y": 636, "tile": [14, 23], "n": 900, "w": 80,
+        "warm_n": 160, "wood_w": 30, "wood_h": 54, "wood_dens": 0.11,
+        "gold_n": 9, "seen": True,
+    }
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 450, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 260, "wood_w": 40, "wood_h": 72, "wood_dens": 0.080,
+        "gold_n": 116, "seen": True,
+    }
+    others = [
+        _enemy_city("c9_12", [9, 12], 320, 280),
+        _enemy_city("c6_9", [6, 9], 200, 200),
+        _enemy_city("c23_17", [23, 17], 840, 460),
+        _enemy_city("c12_16", [12, 16], 441, 455, evidence=["frost_plate", "grey_stone"]),
+    ]
+    out = session_cities([bufla, orkork_low_gold, dark, *others])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    enemy_ids = {c["id"] for c in out if c.get("owner") == "enemy"}
+    assert own_ids == {"c7_16", "c16_24"}, out
+    assert "c14_23" in enemy_ids, out
+    assert len(enemy_ids) == 5, enemy_ids
+
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 248, 450)
+    _draw_bardur_city(d, 570, 667)
+    _draw_disrof_city(d, 980, 220)
+    _draw_disrof_city(d, 1120, 360)
+    _draw_disrof_city(d, 900, 520)
+    _draw_tall_dense_low_gold_phantom(d, 441, 471)
+    _draw_dark_vengir_with_wood_specks(d, 200, 240)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) == 2, mapped["cities"]
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 5, mapped["cities"]
+    assert any(abs(int(c["x"]) - 200) < 50 for c in vengir), enemy
+
+
 def test_own_longhouses_sticky_across_missed_frame():
     """Live flicker: cities_own n=1 missing Orkork/c16_24 on one observe."""
     from polytopia_api.entities import session_cities
@@ -2516,11 +2605,16 @@ def test_own_longhouses_sticky_across_missed_frame():
     assert missed.get("seen") is False
     assert int(missed.get("missed") or 0) == 1
     assert len(enemy_ids) == 5, enemy_ids
-    # Second consecutive miss drops Orkork — do not sticky-grow, and do not
-    # keep a real city forever when it left the screen.
+    # Real Orkork stays sticky across a second miss so observe ×3 stays 2/5.
+    # Phantoms never pass _is_real_own_hit, so this does not sticky-grow own.
     twice = session_cities(stabilize(nxt, out, keep_missing=True))
     twice_own = {c["id"] for c in twice if c.get("owner") == "own"}
-    assert twice_own == {"c7_16"}, twice
+    assert twice_own == {"c7_16", "c16_24"}, twice
+    third = session_cities(stabilize(nxt, twice, keep_missing=True))
+    third_own = {c["id"] for c in third if c.get("owner") == "own"}
+    third_en = {c["id"] for c in third if c.get("owner") == "enemy"}
+    assert third_own == {"c7_16", "c16_24"}, third
+    assert len(third_en) == 5, third_en
     # Consecutive frames keep 2/5 — ghosts still do not grow own.
     ghost = {
         "id": "c15_15", "city_id": "c15_15", "tribe": "bardur", "owner": "own",
@@ -2673,11 +2767,11 @@ def _frost_wood_own_phantom(cid: str, tile: list[int], x: int, y: int) -> dict:
 
 
 def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
-    """Live T46 after #41: cities_own flickers 2→3 (c15_15 / c15_12) then 4–5.
+    """Live T46 after #42: cities_own under-counted Orkork/c16_24; enemy lost c14_23.
 
-    Game Stats Bardur 2 (Bufla c7_16, Orkork c17_12) / Vengir 5. Frost/wood
-    plates with a gold star but no roof lamps must not count, sticky-grow,
-    or merge into a 1-hex neighbor. No warm_n>=500 floor.
+    Game Stats Bardur 2 (Bufla c7_16 + Orkork c16_24) / Vengir 5. Frost/wood
+    phantoms (c15_15 / c15_12 / c15_24) drop. Low gold_n on a real longhouse
+    must not undercount. No warm_n>=500 floor.
     """
     from polytopia_api.detect import as_rgb
     from polytopia_api.entities import _is_real_own_hit, observe_map, session_cities
@@ -2694,35 +2788,37 @@ def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
         "gold_n": 116, "seen": True,
     }
     orkork = {
-        "id": "c17_12", "city_id": "c17_12", "tribe": "bardur", "owner": "own",
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
         "name": None, "confidence": 0.72,
         "evidence": ["frost_plate", "gold_star", "bardur_wood"],
-        "x": 612, "y": 324, "plate_y": 324, "tile": [17, 12], "n": 1100, "w": 88,
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
         "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
-        "gold_n": 68, "seen": True,
+        "gold_n": 12, "seen": True,
     }
     c15_15 = _frost_wood_own_phantom("c15_15", [15, 15], 540, 405)
     c15_12 = {
         **_frost_wood_own_phantom("c15_12", [15, 12], 540, 324),
         "w": 52, "n": 620, "plate_y": 324,
     }
-    c16_24 = _frost_wood_own_phantom("c16_24", [16, 24], 576, 648)
+    c15_24 = _frost_wood_own_phantom("c15_24", [15, 24], 541, 657)
     enemies = [
         _enemy_city("c9_12", [9, 12], 320, 280),
         _enemy_city("c6_9", [6, 9], 200, 200),
-        _enemy_city("c14_23", [14, 23], 500, 620),
+        _enemy_city("c14_23", [14, 23], 500, 620, evidence=["frost_plate", "gold_star", "dark_vengir"]),
         _enemy_city("c23_17", [23, 17], 840, 460),
         _enemy_city("c12_16", [12, 16], 441, 455, evidence=["frost_plate", "grey_stone"]),
     ]
     assert _is_real_own_hit(bufla) and _is_real_own_hit(orkork)
+    assert orkork["gold_n"] < 24
     assert bufla["warm_n"] < 500 and orkork["warm_n"] < 500
     assert not _is_real_own_hit(c15_15)
     assert not _is_real_own_hit(c15_12)
-    assert not _is_real_own_hit(c16_24)
+    assert not _is_real_own_hit(c15_24)
 
     frame1 = session_cities([bufla, orkork, *enemies])
-    assert {c["id"] for c in frame1 if c.get("owner") == "own"} == {"c7_16", "c17_12"}
+    assert {c["id"] for c in frame1 if c.get("owner") == "own"} == {"c7_16", "c16_24"}
     assert len([c for c in frame1 if c.get("owner") == "enemy"]) == 5
+    assert "c14_23" in {c["id"] for c in frame1 if c.get("owner") == "enemy"}
 
     # Flicker frame: phantoms appear. Must stay 2/5.
     frame2 = session_cities(stabilize(
@@ -2732,28 +2828,40 @@ def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
     ))
     own2 = {c["id"] for c in frame2 if c.get("owner") == "own"}
     en2 = {c["id"] for c in frame2 if c.get("owner") == "enemy"}
-    assert own2 == {"c7_16", "c17_12"}, frame2
-    assert "c15_15" not in own2 and "c15_12" not in own2
+    assert own2 == {"c7_16", "c16_24"}, frame2
+    assert "c15_15" not in own2 and "c15_12" not in own2 and "c15_24" not in own2
     assert len(en2) == 5, en2
+    assert "c14_23" in en2
 
-    # After /move-to + /recruit: more ghosts. Must not sticky-pile to 4–5.
+    # After /move-to + /recruit: tile-id jitter phantom. Must not drop Orkork
+    # or sticky-pile to 3–5.
     frame3 = session_cities(stabilize(
-        [dict(bufla), dict(orkork), c16_24, c15_12, *enemies],
+        [dict(bufla), dict(orkork), c15_24, c15_12, *enemies],
         frame2,
         keep_missing=True,
     ))
     own3 = {c["id"] for c in frame3 if c.get("owner") == "own"}
-    assert own3 == {"c7_16", "c17_12"}, frame3
-    assert "c16_24" not in own3 and "c15_15" not in own3
+    en3 = {c["id"] for c in frame3 if c.get("owner") == "enemy"}
+    assert own3 == {"c7_16", "c16_24"}, frame3
+    assert "c15_24" not in own3 and "c15_15" not in own3
+    assert len(en3) == 5, en3
 
-    # Gold-star fragment ~72px from Orkork would be a 3rd own city unless merged.
+    # Gold-star fragment ~72px from a full plate would be a 3rd own unless merged.
+    neighbor = {
+        "id": "c17_12", "city_id": "c17_12", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 612, "y": 324, "plate_y": 324, "tile": [17, 12], "n": 1100, "w": 88,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
+        "gold_n": 68, "seen": True,
+    }
     fragment = dict(
         c15_12,
         warm_n=200, wood_w=36, wood_h=50, wood_dens=0.09, gold_n=70,
         w=50, n=400,
     )
     assert _is_real_own_hit(fragment)
-    split = session_cities([orkork, fragment])
+    split = session_cities([neighbor, fragment])
     split_own = [c for c in split if c.get("owner") == "own"]
     assert len(split_own) == 1, split
     assert split_own[0]["id"] == "c17_12"
@@ -2761,7 +2869,7 @@ def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
     im = Image.new("RGB", (1280, 800), (22, 24, 28))
     d = ImageDraw.Draw(im)
     _draw_bardur_city(d, 248, 450)
-    _draw_bardur_city(d, 612, 324)
+    _draw_bardur_city(d, 570, 667)
     # Mid-map unit frost, not overlapping either longhouse.
     _draw_unit_frost_phantom(d, 100, 500)
     _draw_unit_frost_phantom(d, 100, 360)
@@ -2769,8 +2877,8 @@ def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
     _draw_disrof_city(d, 320, 200)
     _draw_disrof_city(d, 980, 220)
     _draw_disrof_city(d, 1100, 360)
-    _draw_disrof_city(d, 900, 520)
-    _draw_disrof_city(d, 1160, 640)
+    _draw_tall_dense_low_gold_phantom(d, 441, 471)
+    _draw_dark_vengir_with_wood_specks(d, 200, 240)
     mapped = observe_map(as_rgb(im))
     own = mapped["cities_own"]
     enemy = mapped["cities_enemy"]
@@ -2780,7 +2888,8 @@ def test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2():
     assert len(vengir) >= 5, mapped["cities"]
     xs = sorted(int(c["x"]) for c in own)
     assert any(abs(x - 248) < 40 for x in xs), own
-    assert any(abs(x - 612) < 40 for x in xs), own
+    assert any(abs(x - 570) < 40 for x in xs), own
+    assert any(abs(int(c["x"]) - 200) < 50 for c in vengir), enemy
 
 
 def test_own_phantoms_single_miss_does_not_pile_up():
@@ -2797,19 +2906,19 @@ def test_own_phantoms_single_miss_does_not_pile_up():
         "gold_n": 116, "seen": True,
     }
     real_b = {
-        "id": "c17_12", "city_id": "c17_12", "tribe": "bardur", "owner": "own",
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
         "name": None, "confidence": 0.72,
         "evidence": ["frost_plate", "gold_star", "bardur_wood"],
-        "x": 612, "y": 324, "plate_y": 324, "tile": [17, 12], "n": 1100, "w": 88,
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
         "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091,
-        "gold_n": 68, "seen": True,
+        "gold_n": 12, "seen": True,
     }
     ghost = _frost_wood_own_phantom("c15_15", [15, 15], 540, 405)
     prev = [real_a, real_b, ghost]
     nxt = [dict(real_a), dict(real_b)]
     out = session_cities(stabilize(nxt, prev, keep_missing=True))
     ids = {c["id"] for c in out if c.get("owner") == "own"}
-    assert ids == {"c7_16", "c17_12"}, out
+    assert ids == {"c7_16", "c16_24"}, out
 
 
 def test_recruit_timeout_skips_full_observe():
@@ -5520,6 +5629,7 @@ if __name__ == "__main__":
     test_tall_dense_low_gold_c12_16_is_enemy_not_own()
     test_kissing_grey_stone_and_disrof_stay_two_enemy()
     test_dark_vengir_frost_star_counts_as_enemy()
+    test_dark_vengir_wood_specks_stay_enemy_not_dropped()
     test_own_longhouses_sticky_across_missed_frame()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_c15_15_c15_12_frost_wood_phantoms_drop_own_stays_2()
