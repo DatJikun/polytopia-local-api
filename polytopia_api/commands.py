@@ -212,9 +212,9 @@ def _recruit_click_points(
 ) -> list[tuple[int, int, str]]:
     """Clicks that SELECT THE CITY (TRAIN panel), not a unit on the tile (Disband).
 
-    Roof / nameplate open the city. The walk foot selects a garrison/occupant.
-    Live: plate/building/below then foot still returned TRAIN not visible —
-    prefer the roof first, skip the foot when a unit is already on the hex.
+    Nameplate / roof open the city. The standable hex and walk foot select a
+    garrison (live 99876c5: tile-first still returned TRAIN not visible).
+    Never click the foot — that is Disband. Skip the tile when occupied.
     """
     points: list[tuple[int, int, str]] = []
     seen: set[tuple[int, int]] = set()
@@ -228,30 +228,32 @@ def _recruit_click_points(
         points.append((key[0], key[1], where))
         seen.add(key)
 
-    tile = combat.city_tile_center(hit, frame)
-    if tile:
-        _add(tile[0], tile[1], "tile")
-        _add(tile[0], max(0, tile[1] - 8), "roof")
     x = int(hit["x"])
-    building = int(hit["y"])
-    _add(x, building, "building")
     plate = int(hit.get("plate_y") or hit["y"])
+    building = int(hit["y"])
+    tile = combat.city_tile_center(hit, frame)
+    # Nameplate first — that is the city, not the occupant sprite.
     _add(x, plate, "plate")
-    _add(x, max(0, plate - 8), "plate_above")
-    _add(x - 12, plate, "plate_left")
+    _add(x, max(0, plate - 10), "plate_above")
+    _add(x - 14, plate, "plate_left")
+    if tile:
+        _add(tile[0], max(0, tile[1] - 10), "roof")
+    _add(x, building, "building")
     occupied = False
     if obs is not None:
         garrison = combat.garrison_unit(obs.get("units") or [], hit, frame, max_hex=0.9)
         occupied = garrison is not None
-    if not occupied:
-        foot = combat.city_walk_center(hit, frame)
-        if foot:
-            _add(foot[0], foot[1], "city_foot")
+    if tile and not occupied:
+        _add(tile[0], tile[1], "tile")
     return points
 
 
 def _recruit_panel_block(obs: dict[str, Any] | None) -> str | None:
-    """Settings / Tech / Disband / unit panel — not the city TRAIN panel."""
+    """Wrong overlay for TRAIN — BACK these. A leftover unit *name* is not a block.
+
+    Live: city panel OCR often reads a nearby warrior; treating that as ``unit``
+    dismissed the city and TRAIN never appeared.
+    """
     panel = (obs or {}).get("unit") or {}
     raw = str(panel.get("raw") or "").lower()
     if panel.get("settings") or "settings" in raw:
@@ -262,11 +264,15 @@ def _recruit_panel_block(obs: dict[str, Any] | None) -> str | None:
         return "tech"
     if panel.get("train"):
         return None
-    if panel.get("can_move") or panel.get("no_actions") or panel.get("unit"):
+    if panel.get("can_move") or panel.get("no_actions"):
         return "unit"
     if panel.get("capture"):
         return "capture"
     return None
+
+
+def _recruit_hard_block(reason: str | None) -> bool:
+    return reason in {"settings", "disband", "tech", "unit", "capture"}
 
 
 def _dismiss_recruit_block(reason: str | None) -> None:
@@ -2082,6 +2088,19 @@ def _safe_panel_xy(x: int, y: int, frame: tuple[int, int]) -> bool:
     return _in_unit_panel(int(x), int(y), frame)
 
 
+def _unit_crop_train_xy(frame: tuple[int, int] | None = None) -> tuple[int, int] | None:
+    """Left pill in UNIT_CROP (TRAIN / confirm). Never dock / map."""
+    try:
+        x0, y0, x1, y1 = coords.crop_box("UNIT_CROP")
+    except Exception:
+        return None
+    x, y = int(x0 + (x1 - x0) * 0.30), int(y0 + (y1 - y0) * 0.42)
+    fr = frame or coords.frame()
+    if _safe_panel_xy(x, y, fr):
+        return x, y
+    return None
+
+
 def recruit_target(obs: dict[str, Any], city_open: bool = False) -> tuple[int, int] | None:
     """UNIT_CROP TRAIN pill only. Never scaled TRAIN, Tech, or Disband."""
     frame = _frame(obs)
@@ -2102,15 +2121,14 @@ def recruit_target(obs: dict[str, Any], city_open: bool = False) -> tuple[int, i
             return x, y
     unit = obs.get("unit") or {}
     ready = obs.get("ready") or {}
-    if unit.get("train") or ready.get("train"):
-        # OCR saw TRAIN but the pill wasn't clustered — click the panel, not the map.
-        try:
-            x0, y0, x1, y1 = coords.crop_box("UNIT_CROP")
-        except Exception:
-            return None
-        x, y = int(x0 + (x1 - x0) * 0.30), int(y0 + (y1 - y0) * 0.42)
-        if _safe_panel_xy(x, y, frame):
-            return x, y
+    raw = str(unit.get("raw") or "").lower()
+    city_panel = city_open and any(
+        s in raw for s in ("train", "traln", "population", "choose a unit", "choose unit")
+    )
+    if unit.get("train") or ready.get("train") or city_panel:
+        # OCR saw TRAIN / city panel but the pill wasn't clustered — click the
+        # panel, not the map.
+        return _unit_crop_train_xy(frame)
     return None
 
 
@@ -2203,13 +2221,27 @@ def recruit(
             "where": where,
             "city_id": ident,
         }
-        _sleep(0.28)
+        # City panel fades in; 0.28s on live 99876c5 still missed TRAIN.
+        _sleep(0.38)
         if _elapsed() >= RECRUIT_BUDGET_S:
             return _timeout()
         last_obs = observe(mode="marks")
         block = _recruit_panel_block(last_obs)
-        city_open = block is None
+        city_open = not _recruit_hard_block(block)
         target = recruit_target(last_obs, city_open=city_open)
+        # One extra wait after nameplate/roof — TRAIN often appears a beat later.
+        if (
+            target is None
+            and city_open
+            and where in {"plate", "plate_above", "plate_left", "roof"}
+            and _elapsed() < RECRUIT_BUDGET_S - 1.2
+        ):
+            _sleep(0.22)
+            if _elapsed() < RECRUIT_BUDGET_S:
+                last_obs = observe(mode="marks")
+                block = _recruit_panel_block(last_obs)
+                city_open = not _recruit_hard_block(block)
+                target = recruit_target(last_obs, city_open=city_open)
         tried.append({
             "where": where,
             "x": cx,
@@ -2219,7 +2251,7 @@ def recruit(
         })
         if target is not None:
             break
-        if block and _elapsed() < RECRUIT_BUDGET_S - 1.0:
+        if _recruit_hard_block(block) and _elapsed() < RECRUIT_BUDGET_S - 1.0:
             _dismiss_recruit_block(block)
             dismissed.append(block)
             last_obs = remember() or last_obs
