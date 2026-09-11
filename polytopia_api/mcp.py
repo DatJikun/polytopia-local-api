@@ -29,7 +29,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_observe",
-        "description": "Screenshot observe: HUD, stable units/cities (units next to enemy cities e.g. mountain south of Disrof keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
+        "description": "Screenshot observe: HUD, stable units/cities (Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -53,7 +53,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_move_to",
-        "description": "Walk onto a city tile (city_id or x,y). Clicks the building foot even when the blue cluster sits on the roof. Resolves sticky unseen units to a live HP bar. stood_on_city true only when the unit is ON the hex.",
+        "description": "Walk onto a city tile (city_id or x,y). Clicks the building foot even when the blue cluster sits on the roof. Resolves sticky unseen units to a live HP bar (mountain/port). stood_on_city true only when the unit is ON the hex.",
         "inputSchema": {
             "type": "object",
             "properties": {
