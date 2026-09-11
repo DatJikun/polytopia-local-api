@@ -1715,6 +1715,154 @@ def test_nearby_vengir_cities_do_not_merge():
     assert ids >= {"c20_5", "c21_6"}, out
 
 
+def test_nearby_bardur_not_eaten_by_disrof():
+    """Live e1f3eed: cities_own=2 while many Bardur sat ~1 hex from Vengir FPs."""
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    own = _own_city(4, y=300)
+    own["id"] = own["city_id"] = "c12_10"
+    own["tile"] = [12, 10]
+    own["x"], own["y"] = 820, 300
+    own["tile_xy"] = [820, 300]
+    own["plate_y"] = 300
+    own["w"] = 48
+    enemy = _enemy_city("c13_10", [13, 10], 880, 310, w=90, plate_y=310)
+    out = session_cities([own, enemy])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    enemy_ids = {c["id"] for c in out if c.get("owner") == "enemy"}
+    assert "c12_10" in own_ids, out
+    assert "c13_10" in enemy_ids, out
+    sticky = stabilize([own], [enemy], keep_missing=True)
+    own_hit = [c for c in sticky if c.get("id") == "c12_10" or c.get("owner") == "own"]
+    assert own_hit and own_hit[0]["owner"] == "own" and own_hit[0]["tribe"] == "bardur", sticky
+    assert own_hit[0].get("id") != "c13_10"
+
+
+def test_crowded_bardur_own_and_vengir_enemy():
+    """P0: many visible Bardur stay cities_own; Disrof stays cities_enemy (not 2 vs 7)."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    own_pts = [
+        (140, 170), (300, 170), (460, 170), (620, 170),
+        (140, 340), (300, 340), (460, 340), (620, 340),
+        (140, 510), (300, 510), (460, 510), (620, 510),
+    ]
+    for cx, py in own_pts:
+        _draw_bardur_city(d, cx, py)
+    _draw_disrof_city(d, 1040, 220)
+    _draw_disrof_city(d, 1160, 400, lamps=False)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 10, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 2, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+
+
+def test_recruit_timeout_skips_full_observe():
+    """Live: /recruit hung on HUD OCR after every nameplate click."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c5_12",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [5, 12],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    clock = {"t": 0.0}
+    observe_n = {"n": 0}
+
+    def fake_time():
+        return clock["t"]
+
+    def fake_observe(*args, **kwargs):
+        observe_n["n"] += 1
+        raise AssertionError("recruit must not observe again after the 8s budget")
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clock["t"] = 8.0
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands.time, "time", fake_time), patch.object(
+        commands, "remember", return_value=None
+    ), patch.object(commands, "observe", side_effect=fake_observe), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.recruit(city_id="c5_12")
+    assert r["ok"] is False and r["reason"] == "timeout", r
+    assert r["elapsed_s"] < 12
+    assert observe_n["n"] == 0
+    reset_obs()
+
+
+def test_recruit_uses_marks_observe_for_train():
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c4_11",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [4, 11],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    modes: list[str] = []
+    panel = {
+        "layout": {"frame": [1280, 800]},
+        "overlay": {"train_blobs": [{"x": 180, "y": 740, "n": 200}]},
+        "unit": {"train": True},
+        "ready": {"train": True},
+        "hud": {},
+        "turn_diff": None,
+    }
+
+    def fake_observe(*args, **kwargs):
+        modes.append(str(kwargs.get("mode") or (args[0] if args else "full")))
+        return panel
+
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands, "remember", return_value=None), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.recruit(city_id="c4_11")
+    assert r["ok"] is True, r
+    assert (180, 740) in clicks
+    assert modes and all(m == "marks" for m in modes), modes
+    reset_obs()
+
 
 def test_unit_id_stays_resolvable_after_observe_drops_it():
     """Live: after /attack timeout, next call was 'no entity u2'."""
@@ -3701,6 +3849,10 @@ if __name__ == "__main__":
     test_twelve_own_cities_do_not_drop_enemy_or_flood_frost()
     test_late_domination_observe_keeps_visible_vengir()
     test_nearby_vengir_cities_do_not_merge()
+    test_nearby_bardur_not_eaten_by_disrof()
+    test_crowded_bardur_own_and_vengir_enemy()
+    test_recruit_timeout_skips_full_observe()
+    test_recruit_uses_marks_observe_for_train()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
     test_move_to_never_returns_ok_null()

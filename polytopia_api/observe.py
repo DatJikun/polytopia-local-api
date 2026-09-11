@@ -265,6 +265,18 @@ def stabilize(
                 best_d = int(dist ** 0.5)
                 best = p
         if best and best.get("id"):
+            # Same hex already matched above. A neighbor at <56px with a
+            # different owner is a different city — do not steal Bardur ids.
+            same_tile = tile is not None and _tile_key(best) == tile
+            if not same_tile:
+                own_a, own_b = str(d.get("owner") or ""), str(best.get("owner") or "")
+                tribe_a, tribe_b = str(d.get("tribe") or ""), str(best.get("tribe") or "")
+                if (own_a and own_b and own_a != own_b) or {tribe_a, tribe_b} == {
+                    "bardur",
+                    "vengir",
+                }:
+                    best = None
+        if best and best.get("id"):
             prev_id = str(best["id"])
             new_id = str(d.get("id") or "")
             # Grid-hash jitter (c22_17 vs c22_18) must keep the first id.

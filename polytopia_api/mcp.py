@@ -29,7 +29,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_observe",
-        "description": "Screenshot observe: HUD, stable units/cities (visible Vengir stay cities_enemy even when cities_own is full / 12+ Bardur; distinct Disrof/Rzgórst do not merge at 80px; Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
+        "description": "Screenshot observe: HUD, stable units/cities (Bardur stay cities_own even 1 hex from Vengir and never flip own→enemy; visible Vengir stay cities_enemy even when cities_own is full / 12+ Bardur; distinct Disrof/Rzgórst do not merge at 80px; Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -98,7 +98,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_recruit",
-        "description": "Select city_id (nameplate) then click a detected TRAIN blob. Radial unit portraits still need a map click.",
+        "description": "Select city_id (nameplate) then click a detected TRAIN blob. Marks observe under 8s (no HUD OCR hang). Radial unit portraits still need a map click.",
         "inputSchema": {
             "type": "object",
             "properties": {
