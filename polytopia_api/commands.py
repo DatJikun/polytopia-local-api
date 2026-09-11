@@ -1223,19 +1223,107 @@ def _in_unit_panel(x: int, y: int, frame: tuple[int, int]) -> bool:
     return int(y) >= int(h * 0.78) and int(x) <= int(w * 0.52)
 
 
+def _panel_capture_blobs(obs: dict[str, Any] | None) -> list[dict[str, Any]]:
+    overlay = (obs or {}).get("overlay") or {}
+    frame = _frame(obs)
+    out: list[dict[str, Any]] = []
+    for b in overlay.get("capture_blobs") or []:
+        try:
+            if _in_unit_panel(int(b["x"]), int(b["y"]), frame):
+                out.append(b)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _panel_capture_ready(obs: dict[str, Any] | None) -> bool:
+    """OCR Capture *or* a clustered pill in UNIT_CROP — not a map blue."""
+    return _panel_capture(obs) or bool(_panel_capture_blobs(obs))
+
+
+def _capture_soon(obs: dict[str, Any] | None) -> bool:
+    unit = (obs or {}).get("unit") or {}
+    if unit.get("capture_soon"):
+        return True
+    raw = str(unit.get("raw") or "").lower()
+    return any(
+        s in raw
+        for s in (
+            "ready to capture next",
+            "will be ready to capture",
+            "entering village",
+            "entering city",
+        )
+    )
+
+
+def _occupant_for_capture(
+    obs: dict[str, Any],
+    city: dict[str, Any] | None,
+    frame: tuple[int, int],
+    on: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if on and on.get("ok") and (on.get("unit") or {}).get("id"):
+        return on.get("unit")
+    occupant = combat.unit_on_city(
+        obs.get("units") or [],
+        city,
+        frame,
+        obs.get("unit") or {},
+        max_hex=combat.STANDING_HEX,
+        want_owner="own",
+    )
+    if occupant.get("ok"):
+        return occupant.get("unit")
+    if on and on.get("ok"):
+        return _unit_tagged_on_city(obs, city)
+    return None
+
+
+def _unit_foot_first(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
+    """Prefer the sprite foot so we open Capture, not the city TRAIN roof."""
+    rank = {"foot": 0, "below": 1, "bar_below": 2, "body": 3, "above": 4}
+    return sorted(_unit_click_points(hit), key=lambda p: rank.get(p[2], 9))
+
+
+def _open_capture_panel(obs: dict[str, Any], occupant: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
+    """Click the occupying unit until Capture / capture_soon shows in the panel."""
+    if not occupant:
+        return obs, False
+    last = obs
+    opened = False
+    for i, (cx, cy, _where) in enumerate(_unit_foot_first(occupant)[:4]):
+        _click(cx, cy, space="screen")
+        _sleep(0.28 if i else SELECT_LIGHT_SLEEP_S)
+        last = observe(mode="marks")
+        opened = True
+        panel = last.get("unit") or {}
+        if panel.get("settings"):
+            _dismiss_settings(panel)
+            last = remember() or last
+            continue
+        if _panel_capture_ready(last) or _capture_soon(last):
+            return last, True
+        if panel.get("train"):
+            continue
+        if _panel_has_unit(panel):
+            return last, True
+    return last, opened
+
+
 def capture_target(obs: dict[str, Any]) -> tuple[int, int] | None:
     """One Capture blob in UNIT_CROP / bottom-left panel. Never a map blue."""
     unit = obs.get("unit") or {}
     ready = obs.get("ready") or {}
-    if not unit.get("capture") and not ready.get("capture"):
-        return None
+    ocr = bool(unit.get("capture") or ready.get("capture"))
     overlay = obs.get("overlay") or {}
     frame = _frame(obs)
-    blobs = overlay.get("capture_blobs") or []
-    panel = [b for b in blobs if _in_unit_panel(int(b["x"]), int(b["y"]), frame)]
+    panel = _panel_capture_blobs(obs)
     if panel:
         best = max(panel, key=lambda b: int(b.get("n") or 0))
         return int(best["x"]), int(best["y"])
+    if not ocr:
+        return None
     # OCR said Capture but the blue pill wasn't clustered — still click the panel.
     for b in overlay.get("do_it_blobs") or []:
         try:
@@ -1277,7 +1365,8 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
     before = remember() or observe()
     frame = _frame(before)
     on = _stood_on_city(before, hit, frame)
-    panel_capture = _panel_capture(before)
+    panel_opened = False
+    panel_capture = _panel_capture_ready(before)
     if not on.get("ok"):
         occupant = combat.unit_on_city(
             before.get("units") or [],
@@ -1293,7 +1382,8 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
             before = remember() or before
             frame = _frame(before)
             on = _stood_on_city(before, hit, frame)
-            panel_capture = _panel_capture(before)
+            panel_capture = _panel_capture_ready(before)
+            panel_opened = True
     if not on.get("ok"):
         garrison = _enemy_garrison(before, hit, frame)
         if garrison:
@@ -1324,6 +1414,43 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
             "unit": before.get("unit"),
             "captured": False,
         }
+    if _capture_soon(before) and not panel_capture:
+        return {
+            "ok": False,
+            "name": "capture",
+            "reason": "not_ready_until_next_turn",
+            "hint": "unit is on the tile; Capture appears next turn (entering city)",
+            "next": "end-turn",
+            "city_id": city_id,
+            "on_city": on,
+            "unit": before.get("unit"),
+            "captured": False,
+            "stood_on_city": True,
+            "panel_opened": panel_opened,
+        }
+    if not panel_capture:
+        occupant = _occupant_for_capture(before, hit, frame, on)
+        before, opened = _open_capture_panel(before, occupant)
+        panel_opened = panel_opened or opened
+        frame = _frame(before)
+        refreshed = _stood_on_city(before, hit, frame)
+        if refreshed.get("ok"):
+            on = refreshed
+        panel_capture = _panel_capture_ready(before)
+    if _capture_soon(before) and not panel_capture:
+        return {
+            "ok": False,
+            "name": "capture",
+            "reason": "not_ready_until_next_turn",
+            "hint": "unit is on the tile; Capture appears next turn (entering city)",
+            "next": "end-turn",
+            "city_id": city_id,
+            "on_city": on,
+            "unit": before.get("unit"),
+            "captured": False,
+            "stood_on_city": True,
+            "panel_opened": panel_opened,
+        }
     if not panel_capture:
         return {
             "ok": False,
@@ -1334,6 +1461,8 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
             "on_city": on,
             "unit": before.get("unit"),
             "captured": False,
+            "stood_on_city": True,
+            "panel_opened": panel_opened,
         }
     target = capture_target(before)
     if target is None:
@@ -1349,6 +1478,8 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
                 "capture_blobs": (before.get("overlay") or {}).get("capture_blobs"),
             },
             "captured": False,
+            "stood_on_city": True,
+            "panel_opened": panel_opened,
         }
     clicked = _click(target[0], target[1], space="screen")
     _sleep(0.55)
@@ -1366,6 +1497,8 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         "unit": after.get("unit"),
         "ready": after.get("ready"),
         "turn_diff": after.get("turn_diff"),
+        "panel_opened": panel_opened,
+        "stood_on_city": True,
     }
 
 

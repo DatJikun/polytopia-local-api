@@ -228,6 +228,13 @@ def test_capture_and_recruit_targets():
         "unit": {"capture": True},
     }
     assert capture_target(panel) == (220, 1100)
+    blob_no_ocr = {
+        "layout": {"frame": [1920, 1200]},
+        "overlay": {"capture_blobs": [{"x": 220, "y": 1100, "n": 200}]},
+        "ready": {},
+        "unit": {},
+    }
+    assert capture_target(blob_no_ocr) == (220, 1100)
     noisy = {
         "overlay": {"do_it_blobs": [{"x": 400, "y": 400, "n": 800}], "capture_blobs": [{"x": 400, "y": 400, "n": 800}]},
         "ready": {},
@@ -2302,6 +2309,150 @@ def test_capture_when_on_disrof_with_capture_flag():
     reset_obs()
 
 
+def test_capture_opens_panel_when_already_on_city():
+    """Live T41: /move-to already_on_city then /capture saw no Capture blob.
+
+    Occupant is ON the hex but the unit panel is closed (or showing TRAIN).
+    Open the sprite foot so the Capture pill appears, then click it.
+    """
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c19_12",
+        "kind": "city",
+        "x": 201,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [19, 12],
+        "tile_xy": [201, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    blob = {"x": 180, "y": 740, "n": 200}
+    occupant = {"id": "u14", "x": 201, "y": 80, "owner": "own"}
+    closed = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "units": [occupant],
+        "unit": {"capture": False, "train": False, "unit": None},
+        "ready": {},
+        "overlay": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    opened = {
+        **closed,
+        "unit": {"capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+        "overlay": {"capture_blobs": [blob]},
+    }
+    owned = {
+        **opened,
+        "cities_enemy": [],
+        "cities_own": [{**city, "owner": "own", "tribe": "bardur"}],
+        "cities": [{**city, "owner": "own", "tribe": "bardur"}],
+        "unit": {"capture": False},
+        "ready": {},
+    }
+    observes = [opened, owned]
+    with patch.object(commands, "remember", return_value=closed), patch.object(
+        commands, "observe", side_effect=lambda *a, **k: observes.pop(0)
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        cap = commands.capture(city_id="c19_12")
+    assert cap.get("ok") is True and cap.get("captured") is True, cap
+    assert cap.get("panel_opened") is True
+    assert cap.get("stood_on_city") is True
+    assert clicks, clicks
+    assert clicks[0] != (180, 740), clicks
+    assert clicks[-1] == (180, 740), clicks
+    assert clicks[0][0] == 201
+    assert clicks[0][1] >= 80
+    reset_obs()
+
+
+def test_capture_soon_does_not_click_blindly():
+    """Entering city this turn: panel says ready next turn — do not click Capture."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c19_12",
+        "kind": "city",
+        "x": 201,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [19, 12],
+        "tile_xy": [201, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    occupant = {"id": "u14", "x": 201, "y": 80, "owner": "own"}
+    closed = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "units": [occupant],
+        "unit": {"capture": False},
+        "ready": {},
+        "overlay": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    soon = {
+        **closed,
+        "unit": {
+            "capture": False,
+            "capture_soon": True,
+            "village": True,
+            "raw": "Entering Village! Will be ready to capture next turn.",
+        },
+        "overlay": {},
+    }
+    with patch.object(commands, "remember", return_value=closed), patch.object(
+        commands, "observe", return_value=soon
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        cap = commands.capture(city_id="c19_12")
+    assert cap.get("ok") is False, cap
+    assert cap.get("reason") == "not_ready_until_next_turn", cap
+    assert cap.get("next") == "end-turn"
+    assert cap.get("captured") is False
+    assert cap.get("stood_on_city") is True
+    assert (180, 740) not in clicks
+    reset_obs()
+
+
 def test_attack_fast_no_mark_not_timeout():
     """Negative /attack must return no_mark quickly — not burn the 7.5s budget."""
     from unittest.mock import patch
@@ -3051,6 +3202,8 @@ if __name__ == "__main__":
     test_stabilize_units_matches_by_tile()
     test_move_to_from_mountain_unit_stands_on_city()
     test_capture_when_on_disrof_with_capture_flag()
+    test_capture_opens_panel_when_already_on_city()
+    test_capture_soon_does_not_click_blindly()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
     test_find_units_keeps_mountain_south_of_city()
