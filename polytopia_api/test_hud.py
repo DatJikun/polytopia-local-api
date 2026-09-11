@@ -1226,6 +1226,8 @@ def test_win_path_move_capture_attack():
     assert r["elapsed_s"] < 8
     assert r["hp_before"]["id"] == "u9" and r["hp_before"]["hp"] == 10
     assert r["hp_after"]["hp"] == 7
+    assert r.get("garrison_dead") is False
+    assert r.get("next") == "attack"
     assert clicks == [(203, 83)], clicks
 
 
@@ -1290,10 +1292,14 @@ def test_city_id_stays_resolvable_after_observe_drops_it():
     assert atk.get("dest") and atk["dest"]["id"] == "c22_17"
     assert atk["ok"] is False and atk["reason"] == "no_mark_on_target"
     assert mv.get("reason") != "need x,y or city_id/to_id", mv
-    assert mv["ok"] is False and mv["reason"] in {"no_mark_on_city_tile", "city_occupied"}
+    assert mv["ok"] is False and mv["reason"] == "city_occupied"
+    assert mv.get("next") == "attack"
+    assert mv.get("garrison_id") == "u8"
+    assert mv.get("next_call", {}).get("path") == "/attack"
     assert mv.get("suggested_tile_xy") == [200, 80]
     assert cap.get("reason") != "no entity c22_17", cap
-    assert cap["ok"] is False and cap["reason"] == "not_standing_on_city"
+    assert cap["ok"] is False and cap["reason"] == "city_occupied"
+    assert cap.get("next") == "attack"
     assert clicks == []
 
     on_city = {
@@ -2506,6 +2512,207 @@ def test_move_to_clicks_foot_not_roof_centroid():
     reset_obs()
 
 
+def test_city_occupied_attack_then_stand_and_capture():
+    """Live T39: /move-to Disrof returned city_occupied; cannot stand while garrison lives.
+
+    Path: attack until garrison dead → move-to stood_on_city → capture.
+    Roof-blue must not be clicked while the defender is on the tile. Raft
+    cannot hit land — suggest the adjacent Bardur warrior.
+    """
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.combat import land_attacker_near
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c17_5",
+        "kind": "city",
+        "x": 600,
+        "y": 144,
+        "plate_y": 174,
+        "tile": [17, 5],
+        "tile_xy": [600, 144],
+        "tribe": "vengir",
+        "owner": "enemy",
+        "n": 400,
+        "confidence": 0.78,
+        "evidence": ["frost_plate", "magenta_roof"],
+    }
+    register_cities([city])
+    garrison = {
+        "id": "u40", "kind": "unit", "x": 602, "y": 148, "hp": 10, "n": 40,
+        "owner": "enemy", "seen": True,
+    }
+    land = {
+        "id": "u25", "kind": "unit", "x": 607, "y": 180, "owner": "own",
+        "unit": "warrior", "seen": True,
+    }
+    raft = {
+        "id": "u12", "kind": "unit", "x": 636, "y": 144, "owner": "own",
+        "unit": "raft", "seen": True,
+    }
+    near = land_attacker_near([garrison, land, raft], city, (1280, 800))
+    assert near and near["id"] == "u25", near
+
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    base = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    occupied = {
+        **base,
+        "units": [garrison, land, raft],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "move_marks": [{"x": 600, "y": 145, "n": 40, "kind": "move"}],
+        "attack_marks": [{"x": 599, "y": 158, "n": 30}],
+    }
+    selected_land = {"ok": True, "unit": occupied["unit"]}
+    with patch.object(commands, "remember", return_value=occupied), patch.object(
+        commands, "observe", return_value=occupied
+    ), patch.object(commands, "select_unit", return_value=selected_land), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        mv = commands.move_to(from_id="u25", city_id="c17_5")
+    assert mv["ok"] is False and mv["reason"] == "city_occupied", mv
+    assert mv["stood_on_city"] is False
+    assert mv.get("next") == "attack"
+    assert mv.get("garrison_id") == "u40"
+    assert mv.get("attacker_id") == "u25"
+    assert mv.get("next_call", {}).get("path") == "/attack"
+    assert mv["next_call"]["body"]["from_id"] == "u25"
+    assert mv["next_call"]["body"]["city_id"] == "c17_5"
+    assert clicks == [], clicks
+
+    clicks.clear()
+    before_atk = {
+        **occupied,
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+        "attack_marks": [{"x": 599, "y": 158, "n": 30}],
+        "move_marks": [],
+    }
+    after_hit = {
+        **before_atk,
+        "units": [{**garrison, "hp": 5, "n": 20}, land, raft],
+    }
+    with patch.object(commands, "remember", return_value=before_atk), patch.object(
+        commands, "observe", return_value=after_hit
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": before_atk["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        atk = commands.attack(from_id="u25", city_id="c17_5")
+    assert atk["ok"] is True and atk["hp_dropped"] is True, atk
+    assert atk.get("garrison_dead") is False
+    assert atk.get("next") == "attack"
+    assert atk["elapsed_s"] < 8
+    assert clicks, clicks
+
+    clicks.clear()
+    after_kill = {
+        **before_atk,
+        "units": [land, raft],
+        "attack_marks": [],
+        "move_marks": [{"x": 600, "y": 158, "n": 40}],
+    }
+    with patch.object(commands, "remember", return_value=before_atk), patch.object(
+        commands, "observe", return_value=after_kill
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": before_atk["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        atk2 = commands.attack(from_id="u25", city_id="c17_5")
+    assert atk2["ok"] is True and atk2["hp_dropped"] is True, atk2
+    assert atk2.get("garrison_dead") is True
+    assert atk2.get("next") == "move-to"
+    assert atk2.get("next_call", {}).get("path") == "/move-to"
+
+    clicks.clear()
+    raft_sel = {
+        **occupied,
+        "unit": {"no_actions": False, "unit": "raft", "can_move": True},
+    }
+    with patch.object(commands, "remember", return_value=raft_sel), patch.object(
+        commands, "observe", return_value=raft_sel
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": raft_sel["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        raft_atk = commands.attack(from_id="u12", city_id="c17_5")
+    assert raft_atk["ok"] is False and raft_atk["reason"] == "naval_no_land", raft_atk
+    assert raft_atk.get("attacker_id") == "u25"
+    assert raft_atk.get("next_call", {}).get("body", {}).get("from_id") == "u25"
+    assert clicks == [], clicks
+
+    clicks.clear()
+    empty_city = {
+        **base,
+        "units": [land, raft],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "move_marks": [{"x": 600, "y": 158, "n": 50}],
+        "attack_marks": [],
+    }
+    after_stand = {
+        **empty_city,
+        "units": [{**land, "x": 600, "y": 158}, raft],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+        "move_marks": [],
+    }
+    with patch.object(commands, "remember", return_value=empty_city), patch.object(
+        commands, "observe", return_value=after_stand
+    ), patch.object(commands, "select_unit", return_value=selected_land), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        stand = commands.move_to(from_id="u25", city_id="c17_5")
+    assert stand["ok"] is True and stand["stood_on_city"] is True, stand
+    assert clicks, clicks
+
+    clicks.clear()
+    panel_blob = {"x": 180, "y": 740, "n": 200}
+    on_city = {
+        **after_stand,
+        "overlay": {"capture_blobs": [panel_blob]},
+        "ready": {"capture": True},
+        "unit": {"capture": True, "no_actions": False, "unit": "warrior"},
+    }
+    captured_state = {
+        **on_city,
+        "cities_enemy": [],
+        "cities_own": [{**city, "owner": "own", "tribe": "bardur"}],
+        "cities": [{**city, "owner": "own", "tribe": "bardur"}],
+    }
+    with patch.object(commands, "remember", return_value=on_city), patch.object(
+        commands, "observe", return_value=captured_state
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        cap = commands.capture(city_id="c17_5")
+    assert cap["ok"] is True and cap["captured"] is True, cap
+    assert clicks == [(180, 740)], clicks
+    reset_obs()
+
+
 if __name__ == "__main__":
     test_parse_hud()
     test_parse_unit()
@@ -2565,4 +2772,5 @@ if __name__ == "__main__":
     test_find_units_keeps_mountain_south_of_city()
     test_select_unit_prefers_live_over_ghost_sticky()
     test_move_to_clicks_foot_not_roof_centroid()
+    test_city_occupied_attack_then_stand_and_capture()
     print("ok")

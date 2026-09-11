@@ -53,7 +53,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_move_to",
-        "description": "Walk onto a city tile (city_id or x,y). Clicks the building foot even when the blue cluster sits on the roof. Resolves sticky unseen units to a live HP bar. stood_on_city true only when the unit is ON the hex.",
+        "description": "Walk onto a city tile (city_id or x,y). If the city is garrisoned, returns city_occupied with next=/attack (do not walk). Else clicks the building foot. stood_on_city true only when the unit is ON the hex.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -70,7 +70,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_attack",
-        "description": "Attack: select from_id, click a red hex on to_id/city_id. Returns red marks + hp_dropped. Rafts cannot hit land cities.",
+        "description": "Attack the city garrison: select from_id, click a red hex on city_id. hp_dropped until garrison_dead, then next=/move-to. Rafts cannot hit land — response suggests a land attacker_id.",
         "inputSchema": {
             "type": "object",
             "properties": {
