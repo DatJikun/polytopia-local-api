@@ -553,6 +553,28 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     return b
 
 
+def _keep_sticky_city(c: dict[str, Any]) -> bool:
+    """Unnamed frost FPs must not accumulate across observes (2→4→7)."""
+    if c.get("owner") == "own":
+        return True
+    if c.get("name"):
+        return True
+    ev = c.get("evidence") or []
+    if "magenta_roof" in ev or "gold_lamps" in ev:
+        return True
+    return False
+
+
+def session_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """After stabilize(keep_missing): drop unseen frost FPs, recap unnamed Vengir."""
+    kept: list[dict[str, Any]] = []
+    for c in cities or []:
+        if c.get("seen") is False and not _keep_sticky_city(c):
+            continue
+        kept.append(c)
+    return _cap_vengir(_dedupe_cities(kept))[:12]
+
+
 def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[dict[str, Any]]:
     """Keep real Disrof-class hits; drop a swarm of unnamed frost fragments."""
     named: list[dict[str, Any]] = []

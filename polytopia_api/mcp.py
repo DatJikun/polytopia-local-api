@@ -219,7 +219,14 @@ def _http(method: str, path: str, body: dict | None = None) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+            if not raw:
+                return {"ok": False, "reason": "empty_response"}
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                return {"ok": False, "reason": "bad_response", "raw": parsed}
+            if parsed.get("ok") is None:
+                parsed["ok"] = False if parsed.get("error") else True
+            return parsed
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", errors="replace")
         try:
@@ -227,6 +234,8 @@ def _http(method: str, path: str, body: dict | None = None) -> dict[str, Any]:
         except json.JSONDecodeError:
             parsed = {"error": raw or str(e)}
         parsed.setdefault("http", e.code)
+        if parsed.get("ok") is None:
+            parsed["ok"] = False
         return parsed
     except urllib.error.URLError as e:
         return {

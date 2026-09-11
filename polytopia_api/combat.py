@@ -25,6 +25,23 @@ RANGE: dict[str, int] = {
     "boat": 1,
     "ship": 1,
 }
+# Walk range this turn (not attack). Unknown types default to 1.
+MOVE: dict[str, int] = {
+    "warrior": 1,
+    "defender": 1,
+    "archer": 1,
+    "catapult": 1,
+    "mind_bender": 1,
+    "giant": 1,
+    "rider": 2,
+    "raft": 2,
+    "scout": 2,
+    "boat": 2,
+    "rammer": 2,
+    "bomber": 2,
+    "knight": 3,
+    "ship": 3,
+}
 NAVAL = {"raft", "scout", "rammer", "bomber", "boat", "ship"}
 LAND_ONLY = {"warrior", "rider", "defender", "knight", "giant", "archer", "catapult", "mind_bender"}
 
@@ -76,6 +93,61 @@ def tile_dist(x0: int, y0: int, x1: int, y1: int, pitch: int) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+def move_range(unit_type: str | None) -> int:
+    kind = (unit_type or "").strip().lower() or "warrior"
+    if kind == "boat":
+        kind = "scout"
+    return int(MOVE.get(kind, 1))
+
+
+def can_reach_tile(
+    unit_type: str | None,
+    from_xy: tuple[int, int] | None,
+    to_xy: tuple[int, int] | None,
+    frame: tuple[int, int],
+) -> dict[str, Any]:
+    """True when this unit can walk onto to_xy this turn (hex estimate)."""
+    pitch = hex_pitch(*frame)
+    rng = move_range(unit_type)
+    dist = None
+    if from_xy and to_xy:
+        dist = round(tile_dist(from_xy[0], from_xy[1], to_xy[0], to_xy[1], pitch), 2)
+    ok = dist is not None and dist <= rng + 0.65
+    return {
+        "ok": bool(ok),
+        "reason": "in_move_range" if ok else "out_of_move_range",
+        "tile_dist": dist,
+        "move_range": rng,
+        "hex_pitch": pitch,
+    }
+
+
+def nearest_mark_toward(
+    marks: list[dict[str, Any]],
+    from_xy: tuple[int, int] | None,
+    to_xy: tuple[int, int],
+    frame: tuple[int, int],
+    reach: float | None = None,
+) -> tuple[dict[str, Any] | None, float | None]:
+    """Blue mark this unit can step on that is closest to the destination."""
+    pitch = hex_pitch(*frame)
+    best = None
+    best_to = None
+    for m in marks or []:
+        try:
+            mx, my = int(m["x"]), int(m["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if from_xy is not None and reach is not None:
+            if tile_dist(from_xy[0], from_xy[1], mx, my, pitch) > reach + 0.65:
+                continue
+        d_to = tile_dist(mx, my, to_xy[0], to_xy[1], pitch)
+        if best_to is None or d_to < best_to:
+            best_to = d_to
+            best = m
+    return best, (None if best_to is None else round(best_to, 3))
+
+
 def unit_profile(unit_type: str | None) -> dict[str, Any]:
     kind = (unit_type or "").strip().lower() or None
     if kind == "boat":
@@ -85,6 +157,7 @@ def unit_profile(unit_type: str | None) -> dict[str, Any]:
     return {
         "type": kind,
         "range": rng,
+        "move": MOVE.get(kind) if kind else None,
         "naval": bool(naval) if kind else None,
         "land_attack": False if kind in NAVAL else (True if kind in LAND_ONLY else None),
     }
@@ -131,6 +204,7 @@ def unit_on_city(
     frame: tuple[int, int],
     panel: dict[str, Any] | None = None,
     max_hex: float = 0.4,
+    want_owner: str | None = "own",
 ) -> dict[str, Any]:
     """True when a unit stands ON the city tile (Capture), not merely adjacent."""
     panel = panel or {}
@@ -143,6 +217,10 @@ def unit_on_city(
     hit = None
     best_d = max_hex
     for u in units or []:
+        if want_owner:
+            owner = str(u.get("owner") or "")
+            if owner and owner != want_owner:
+                continue
         try:
             d = tile_dist(int(u["x"]), int(u["y"]), center[0], center[1], pitch)
         except (KeyError, TypeError, ValueError):
