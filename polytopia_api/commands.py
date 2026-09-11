@@ -7,11 +7,13 @@ from typing import Any
 
 from . import combat
 from . import coords
+from . import detect
 from . import driver
 from . import snapshot
-from .observe import lookup, lookup_city, observe, remember
+from .observe import lookup, lookup_city, lookup_unit, observe, remember
 
 ATTACK_BUDGET_S = 7.5
+SELECT_LIGHT_SLEEP_S = 0.18
 
 
 def _sleep(seconds: float = 0.4) -> None:
@@ -27,10 +29,29 @@ def _click(x: int, y: int, space: str = "screen", repeats: int = 1) -> dict[str,
     return driver.click(int(x), int(y), space=space, repeats=repeats)
 
 
+def _fail(name: str, reason: str, **extra: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {"ok": False, "name": name, "reason": reason}
+    out.update(extra)
+    return out
+
+
+def _shot_arr(obs: dict[str, Any] | None):
+    path = (obs or {}).get("screenshot")
+    if not path:
+        return None
+    try:
+        from PIL import Image
+
+        return detect.as_rgb(Image.open(path))
+    except Exception:
+        return None
+
+
 def _resolve(ident: str | None, space: str = "screen") -> dict[str, Any] | None:
     """Resolve city_id/unit id from the last observe, then the turn-sticky index.
 
     A later frame that misses a frost plate must not forget c22_17 mid-turn.
+    A later frame that misses an HP bar must not forget u2 after /attack.
     """
     if not ident:
         return None
@@ -40,7 +61,7 @@ def _resolve(ident: str | None, space: str = "screen") -> dict[str, Any] | None:
         hit = lookup(mem, ident)
         if hit:
             return hit
-    hit = lookup_city(ident)
+    hit = lookup_city(ident) or lookup_unit(ident)
     if hit:
         return hit
     return lookup(observe(), ident)
@@ -70,22 +91,22 @@ def select_unit(
     id: str | None = None,
     city_id: str | None = None,
     space: str = "screen",
+    light: bool = False,
 ) -> dict[str, Any]:
     """Click a unit (or city/village) so the panel / move marks appear."""
     hit = None
     ident = id or city_id
     if ident:
-        obs = remember() or observe()
-        hit = lookup(obs, ident)
+        hit = _resolve(ident, space)
         if not hit:
-            return {"ok": False, "name": "select_unit", "reason": f"no entity {ident}"}
+            return _fail("select_unit", f"no entity {ident}")
         x, y = _entity_click_xy(hit)
         space = "screen"
     if x is None or y is None:
-        return {"ok": False, "name": "select_unit", "reason": "need x,y or id/city_id"}
+        return _fail("select_unit", "need x,y or id/city_id")
     clicked = _click(x, y, space=space)
-    _sleep()
-    after = observe()
+    _sleep(SELECT_LIGHT_SLEEP_S if light else 0.4)
+    after = observe(mode="marks" if light else "full")
     return {
         "ok": True,
         "name": "select_unit",
@@ -96,8 +117,10 @@ def select_unit(
         "y": clicked["y"],
         "unit": after.get("unit"),
         "move_marks": after.get("move_marks"),
+        "attack_marks": after.get("attack_marks"),
         "ready": after.get("ready"),
         "hud": after.get("hud"),
+        "observe_mode": after.get("observe_mode"),
     }
 
 
@@ -112,16 +135,49 @@ def move_to(
     space: str = "screen",
 ) -> dict[str, Any]:
     """Click a blue move mark on the city tile — never the nameplate."""
+    try:
+        return _move_to(
+            x=x, y=y, from_x=from_x, from_y=from_y,
+            from_id=from_id, city_id=city_id, to_id=to_id, space=space,
+        )
+    except Exception as e:
+        return _fail(
+            "move_to",
+            "error",
+            error=str(e),
+            city_id=city_id,
+            from_id=from_id,
+            stood_on_city=False,
+        )
+
+
+def _move_to(
+    x: int | None = None,
+    y: int | None = None,
+    from_x: int | None = None,
+    from_y: int | None = None,
+    from_id: str | None = None,
+    city_id: str | None = None,
+    to_id: str | None = None,
+    space: str = "screen",
+) -> dict[str, Any]:
     dest = _resolve(city_id or to_id, space)
     selected = None
     if from_id or from_x is not None:
-        selected = select_unit(x=from_x, y=from_y, id=from_id, space=space)
+        selected = select_unit(x=from_x, y=from_y, id=from_id, space=space, light=True)
         if not selected.get("ok"):
-            return {**selected, "name": "move_to"}
-    after_select = remember() or observe()
+            return _fail(
+                "move_to",
+                str(selected.get("reason") or "select_failed"),
+                from_id=from_id,
+                city_id=city_id,
+                selected=selected,
+                stood_on_city=False,
+            )
+    after_select = remember() or observe(mode="marks")
     frame = _frame(after_select)
-    marks = after_select.get("move_marks") or []
-    tile_xy = None
+    marks = list(after_select.get("move_marks") or [])
+    panel = after_select.get("unit") or {}
     is_city = bool(
         dest
         and (
@@ -133,28 +189,107 @@ def move_to(
     if is_city:
         tile_xy = combat.city_tile_center(dest, frame)
         if tile_xy is None:
-            return {"ok": False, "name": "move_to", "reason": "need x,y or city_id/to_id"}
+            try:
+                tile_xy = (int(dest["x"]), int(dest["y"]))
+            except (KeyError, TypeError, ValueError):
+                return _fail(
+                    "move_to",
+                    "need x,y or city_id/to_id",
+                    city_id=city_id,
+                    stood_on_city=False,
+                )
         x, y = tile_xy
         space = "screen"
-        mark, hex_d = combat.nearest_mark_hex(marks, x, y, frame, 0.6)
-        if mark is None:
+        already = combat.unit_on_city(
+            after_select.get("units") or [], dest, frame, panel, max_hex=0.55, want_owner="own"
+        )
+        if already.get("ok"):
             return {
-                "ok": False,
+                "ok": True,
                 "name": "move_to",
-                "reason": "no_mark_on_city_tile",
-                "hint": "no blue mark within 0.6 hex of the city tile — unit cannot stand ON this turn",
+                "x": x,
+                "y": y,
                 "city_id": city_id,
                 "to_id": to_id or city_id,
-                "city_xy": [x, y],
-                "tile": dest.get("tile"),
-                "move_marks": marks,
+                "dest": dest,
                 "selected": selected,
-                "stood_on_city": False,
+                "stood_on_city": True,
+                "on_city": already,
+                "reason": "already_on_city",
+                "suggested_tile_xy": [x, y],
+                "unit": panel,
+                "hud": after_select.get("hud"),
+                "ready": after_select.get("ready"),
+                "turn_diff": after_select.get("turn_diff"),
             }
+        src = _resolve(from_id) if from_id else None
+        fx = fy = None
+        if src:
+            fx, fy = int(src["x"]), int(src["y"])
+        elif from_x is not None and from_y is not None:
+            fx, fy = int(from_x), int(from_y)
+        reach = combat.can_reach_tile(
+            panel.get("unit"),
+            (fx, fy) if fx is not None else None,
+            (x, y),
+            frame,
+        )
+        mark, hex_d = combat.nearest_mark_hex(marks, x, y, frame, 1.15)
+        if mark is None:
+            arr = _shot_arr(after_select)
+            if arr is not None:
+                tint = detect.move_tint_at(arr, x, y)
+                if tint.get("ok"):
+                    mark, hex_d = tint, 0.0
+        garrison = combat.garrison_unit(after_select.get("units") or [], dest, frame)
+        enemy_on = bool(garrison and str(garrison.get("owner") or "") == "enemy")
+        if mark is None and reach.get("ok") and not enemy_on and panel.get("can_move") is not False:
+            mark = {"x": x, "y": y, "n": 0, "kind": "city_tile"}
+            hex_d = 0.0
+        step, _ = combat.nearest_mark_toward(
+            marks,
+            (fx, fy) if fx is not None else None,
+            (x, y),
+            frame,
+            combat.move_range(panel.get("unit")),
+        )
+        suggested = [int(step["x"]), int(step["y"])] if step else [x, y]
+        if mark is None:
+            path_reason = "no_mark_on_city_tile"
+            hint = "no blue mark on the city tile — unit cannot stand ON this turn"
+            if enemy_on:
+                path_reason = "city_occupied"
+                hint = "attack the garrison first (hp_dropped) then move-to"
+            elif not reach.get("ok"):
+                path_reason = "out_of_move_range"
+                hint = "city is beyond this unit's walk this turn — step toward suggested_tile_xy"
+            elif not marks:
+                path_reason = "no_move_marks"
+                hint = "select did not light blue hexes — unit may have no moves"
+            return _fail(
+                "move_to",
+                "no_mark_on_city_tile",
+                hint=hint,
+                path_reason=path_reason,
+                city_id=city_id,
+                to_id=to_id or city_id,
+                city_xy=[x, y],
+                suggested_tile_xy=suggested,
+                tile=dest.get("tile"),
+                tile_dist=reach.get("tile_dist"),
+                move_range=reach.get("move_range"),
+                move_marks=marks,
+                selected=selected,
+                garrison=garrison,
+                can_reach=reach,
+                stood_on_city=False,
+            )
         clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
-        _sleep(0.45)
-        after = observe()
-        on = combat.unit_on_city(after.get("units") or [], dest, frame, after.get("unit") or {}, max_hex=0.55)
+        _sleep(0.35)
+        after = observe(mode="marks")
+        on = combat.unit_on_city(
+            after.get("units") or [], dest, frame, after.get("unit") or {}, max_hex=0.55, want_owner="own"
+        )
         return {
             "ok": True,
             "name": "move_to",
@@ -168,6 +303,7 @@ def move_to(
             "selected": selected,
             "stood_on_city": bool(on.get("ok")),
             "on_city": on,
+            "suggested_tile_xy": [x, y],
             "unit": after.get("unit"),
             "hud": after.get("hud"),
             "ready": after.get("ready"),
@@ -177,10 +313,10 @@ def move_to(
         x, y = int(dest["x"]), int(dest["y"])
         space = "screen"
     if x is None or y is None:
-        return {"ok": False, "name": "move_to", "reason": "need x,y or city_id/to_id"}
+        return _fail("move_to", "need x,y or city_id/to_id", city_id=city_id, stood_on_city=False)
     clicked = _click(x, y, space=space)
     _sleep()
-    after = observe()
+    after = observe(mode="marks")
     return {
         "ok": True,
         "name": "move_to",
@@ -251,6 +387,7 @@ def capture(city_id: str | None = None, space: str = "screen") -> dict[str, Any]
         frame,
         before.get("unit") or {},
         max_hex=0.4,
+        want_owner="own",
     )
     panel_capture = bool((before.get("unit") or {}).get("capture") or (before.get("ready") or {}).get("capture"))
     if not on.get("ok"):
@@ -374,9 +511,16 @@ def attack(
         }
     selected = None
     if from_id or from_x is not None:
-        selected = select_unit(x=from_x, y=from_y, id=from_id, space=space)
+        selected = select_unit(x=from_x, y=from_y, id=from_id, space=space, light=True)
         if not selected.get("ok"):
-            return {**selected, "name": "attack", "elapsed_s": _elapsed()}
+            return _fail(
+                "attack",
+                str(selected.get("reason") or "select_failed"),
+                from_id=from_id,
+                city_id=city_id,
+                selected=selected,
+                elapsed_s=_elapsed(),
+            )
     if _elapsed() >= ATTACK_BUDGET_S:
         return {
             "ok": False,
@@ -391,7 +535,7 @@ def attack(
         }
     before = remember() or (selected or {}).get("state")
     if before is None:
-        before = observe()
+        before = observe(mode="marks")
     elapsed = _elapsed()
     panel = before.get("unit") or {}
     if panel.get("no_actions"):
@@ -428,7 +572,7 @@ def attack(
     marks = list(before.get("attack_marks") or (before.get("overlay") or {}).get("attack_marks") or [])
     fx = fy = None
     if from_id:
-        src = lookup(before, from_id)
+        src = lookup(before, from_id) or lookup_unit(from_id)
         if src:
             fx, fy = int(src["x"]), int(src["y"])
     elif from_x is not None:
@@ -447,6 +591,12 @@ def attack(
         mark = verdict.get("red_mark")
         d_hex = None
     if mark is None:
+        arr = _shot_arr(before)
+        if arr is not None:
+            tint = detect.attack_tint_at(arr, x, y)
+            if tint.get("ok"):
+                mark, d_hex = tint, 0.0
+    if mark is None:
         return {
             "ok": False,
             "name": "attack",
@@ -457,6 +607,7 @@ def attack(
             "dest": dest,
             "garrison": garrison,
             "aim": [x, y],
+            "suggested_tile_xy": [x, y],
             "selected": selected,
             "attack_marks": marks,
             "can_strike": verdict,
@@ -496,7 +647,7 @@ def attack(
             "aim": [x, y],
         }
     _sleep(0.25)
-    after = observe()
+    after = observe(mode="marks")
     hp_after = _hp_snapshot(after, to_id or city_id, x, y)
     hp_dropped = False
     if hp_before.get("id") and not hp_after.get("id"):

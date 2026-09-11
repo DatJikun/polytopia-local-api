@@ -17,6 +17,8 @@ _LAST: dict[str, Any] | None = None
 # city_id → last known city for this turn. Attack/move/capture must still
 # resolve c22_17 after a later observe misses the frost plate.
 _CITY_INDEX: dict[str, dict[str, Any]] = {}
+# unit id → last known unit for this turn. /attack timeout must not forget u2.
+_UNIT_INDEX: dict[str, dict[str, Any]] = {}
 
 
 def remember() -> dict[str, Any] | None:
@@ -24,9 +26,10 @@ def remember() -> dict[str, Any] | None:
 
 
 def reset() -> None:
-    global _LAST, _CITY_INDEX
+    global _LAST, _CITY_INDEX, _UNIT_INDEX
     _LAST = None
     _CITY_INDEX = {}
+    _UNIT_INDEX = {}
 
 
 def lookup_city(ident: str) -> dict[str, Any] | None:
@@ -56,11 +59,36 @@ def register_cities(cities: list[dict[str, Any]] | None) -> None:
             _CITY_INDEX[str(alias)] = stored
 
 
+def lookup_unit(ident: str) -> dict[str, Any] | None:
+    ident = str(ident)
+    hit = _UNIT_INDEX.get(ident)
+    if hit:
+        return hit
+    for u in _UNIT_INDEX.values():
+        if str(u.get("id_alias") or "") == ident:
+            return u
+    return None
+
+
+def register_units(units: list[dict[str, Any]] | None) -> None:
+    for u in units or []:
+        uid = str(u.get("id") or "")
+        if not uid:
+            continue
+        stored = dict(u)
+        _UNIT_INDEX[uid] = stored
+        alias = stored.get("id_alias")
+        if alias:
+            _UNIT_INDEX[str(alias)] = stored
+
+
 def lookup(obs: dict[str, Any] | None, ident: str) -> dict[str, Any] | None:
     ident = str(ident)
     keys = ("units", "cities", "cities_own", "cities_enemy", "villages", "move_marks", "fruit", "attack_marks")
     if ident.startswith("c"):
         keys = ("cities", "cities_own", "cities_enemy") + keys
+    elif ident.startswith("u"):
+        keys = ("units",) + keys
     low = ident.lower()
     if obs:
         for key in keys:
@@ -72,8 +100,12 @@ def lookup(obs: dict[str, Any] | None, ident: str) -> dict[str, Any] | None:
                     return it
                 if ident.startswith("c") and str(it.get("id_alias") or "") == ident:
                     return it
+                if ident.startswith("u") and str(it.get("id_alias") or "") == ident:
+                    return it
+    if ident.startswith("u"):
+        return lookup_unit(ident)
     if ident.startswith("c") or ident[:1].isalpha():
-        return lookup_city(ident)
+        return lookup_city(ident) or lookup_unit(ident)
     return None
 
 
@@ -223,6 +255,61 @@ def stabilize(
     return out
 
 
+def _next_unit_id(used: set[str]) -> str:
+    i = 0
+    while f"u{i}" in used:
+        i += 1
+    return f"u{i}"
+
+
+def stabilize_units(
+    items: list[dict[str, Any]],
+    prev: list[dict[str, Any]] | None,
+    max_dist: int = 56,
+    keep_missing: bool = True,
+) -> list[dict[str, Any]]:
+    """Keep u2/u5/u11 for the turn even when an HP bar flickers after /attack."""
+    used: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for it in items or []:
+        d = dict(it)
+        d["seen"] = True
+        best = None
+        best_d = max_dist
+        for p in prev or []:
+            pid = str(p.get("id") or "")
+            if not pid or pid in used:
+                continue
+            try:
+                dist = ((int(d["x"]) - int(p["x"])) ** 2 + (int(d["y"]) - int(p["y"])) ** 2) ** 0.5
+            except (KeyError, TypeError, ValueError):
+                continue
+            if dist <= best_d:
+                best_d = dist
+                best = p
+        if best and best.get("id"):
+            d["id"] = best["id"]
+            d["stable"] = True
+            used.add(str(d["id"]))
+        else:
+            d["id"] = _next_unit_id(used | {str(p.get("id") or "") for p in (prev or [])})
+            d["stable"] = False
+            used.add(str(d["id"]))
+        out.append(d)
+    if keep_missing:
+        for p in prev or []:
+            pid = str(p.get("id") or "")
+            if not pid or pid in used:
+                continue
+            d = dict(p)
+            d["stable"] = True
+            d["seen"] = False
+            d["sticky"] = True
+            used.add(pid)
+            out.append(d)
+    return out
+
+
 def ready_flags(unit: dict[str, Any], overlay: dict[str, Any], confirm_ready: bool) -> dict[str, Any]:
     capture = bool(unit.get("capture"))
     train = bool(unit.get("train") or overlay.get("train_pixel"))
@@ -237,33 +324,57 @@ def ready_flags(unit: dict[str, Any], overlay: dict[str, Any], confirm_ready: bo
     }
 
 
-def observe(shot: Any | None = None) -> dict[str, Any]:
+def observe(shot: Any | None = None, mode: str = "full") -> dict[str, Any]:
+    """mode=full: HUD + cities. mode=marks: panel + units + hexes (fast /attack)."""
     global _LAST
     path = shot or driver.screenshot()
     im = Image.open(path)
     coords.set_frame(*im.size)
-    hud = driver.read_hud(im)
-    snapshot.apply_turn_floor(hud)
+    prev = _LAST
+    light = mode == "marks" and prev is not None
+    if light:
+        hud = dict(prev.get("hud") or {})
+    else:
+        hud = driver.read_hud(im)
+        snapshot.apply_turn_floor(hud)
     unit = driver.parse_unit_panel(
         driver.ocr_crop(im, coords.UNIT_CROP, driver.UNIT_PATH)
     )
     pix = detect.observe_pixels(im)
     overlay = pix["overlay"]
     arr = detect.as_rgb(im)
-    mapped = entities.observe_map(arr)
-    prev = _LAST
+    if light:
+        mapped_units = entities.find_units(arr)
+        mapped_cities = list(prev.get("cities") or [])
+        villages = list(prev.get("villages") or [])
+        fog = list(prev.get("fog_edge") or [])
+        own_tribe = prev.get("own_tribe") or entities._own_tribe()
+        villages_enabled = bool(prev.get("villages_enabled", False))
+    else:
+        mapped = entities.observe_map(arr)
+        mapped_units = mapped["units"]
+        mapped_cities = mapped["cities"]
+        villages = mapped["villages"]
+        fog = mapped.get("fog_edge") or []
+        own_tribe = mapped["own_tribe"]
+        villages_enabled = mapped.get("villages_enabled", False)
     prev_turn = ((prev or {}).get("hud") or {}).get("turn")
     new_turn = (hud or {}).get("turn")
     if prev_turn is not None and new_turn is not None and prev_turn != new_turn:
         _CITY_INDEX.clear()
+        _UNIT_INDEX.clear()
         prev = None
-    units = stabilize(_ids("u", mapped["units"]), (prev or {}).get("units"))
+    units = stabilize_units(mapped_units, (prev or {}).get("units"), keep_missing=True)
+    register_units(units)
     # City ids are grid hashes (c{gx}_{gy}); never reindex as c0/c1.
     # Keep unmatched previous cities so attack/move/capture still resolve.
-    cities = stabilize(
-        list(mapped["cities"]),
-        (prev or {}).get("cities"),
-        keep_missing=True,
+    # Recap unnamed Vengir so frost FPs do not grow 2→4→7 across the session.
+    cities = entities.session_cities(
+        stabilize(
+            list(mapped_cities),
+            (prev or {}).get("cities"),
+            keep_missing=True,
+        )
     )
     register_cities(cities)
     own = [c for c in cities if c.get("owner") == "own"]
@@ -281,7 +392,15 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         or (overlay.get("capture_blobs") and unit.get("capture"))
         or (overlay.get("do_it_blobs") and unit.get("harvest"))
     )
-    info = driver.find_window()
+    if light and prev.get("window"):
+        info = prev["window"]
+        win = {k: info.get(k) for k in ("found", "pid", "window_id", "width", "height", "match", "name")}
+    else:
+        info = driver.find_window()
+        win = {
+            k: info.get(k)
+            for k in ("found", "pid", "window_id", "width", "height", "match", "name")
+        }
     payload = {
         "hud": hud,
         "unit": unit,
@@ -289,10 +408,10 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         "cities": cities,
         "cities_own": own,
         "cities_enemy": enemy,
-        "villages": mapped["villages"],
-        "villages_enabled": mapped.get("villages_enabled", False),
-        "fog_edge": mapped.get("fog_edge") or [],
-        "own_tribe": mapped["own_tribe"],
+        "villages": villages,
+        "villages_enabled": villages_enabled,
+        "fog_edge": fog,
+        "own_tribe": own_tribe,
         "move_marks": _ids("m", pix["move_marks"]),
         "attack_marks": attack_marks,
         "fruit": _ids("f", pix["fruit"]),
@@ -301,12 +420,10 @@ def observe(shot: Any | None = None) -> dict[str, Any]:
         "confirm_ready": confirm_ready,
         "ready": ready_flags(unit, overlay, confirm_ready),
         "hits_space": "screen",
-        "window": {
-            k: info.get(k)
-            for k in ("found", "pid", "window_id", "width", "height", "match", "name")
-        },
+        "window": win,
         "layout": coords.layout_info(),
         "screenshot": str(path),
+        "observe_mode": "marks" if light else "full",
     }
     payload["observe_diff"] = snapshot.diff(prev, payload, reason="frame") if prev else None
     payload["turn_diff"] = snapshot.diff(snapshot.last_saved(), payload, reason="observe")
