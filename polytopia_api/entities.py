@@ -880,7 +880,10 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             # neighbor. Fruit-gold / cool mountain / tiny frost splits are ghosts.
             warm_n = _warm_bardur_pixels(arr, cx, cy, bw, up)
             lettered = frost_plate and _plate_contrast(arr, cx, cy, bw, bh)
-            if not wood or warm_n < 30:
+            # Longhouse wood is thousands of pixels. Sparse mountain/forest
+            # next to a frost streak was the T46 mid-map phantom c12_16
+            # (warm_n≈345 vs Bufla/Orkork ≈1600+).
+            if not wood or warm_n < 500:
                 continue
             if not marks and not lettered:
                 continue
@@ -916,7 +919,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             evidence.append("gold_lamps")
         if marks and "gold_lamps" not in evidence:
             evidence.append("gold_star")
-        if own and warm_n >= 30:
+        if own and warm_n >= 500:
             evidence.append("bardur_wood")
         building_y = max(0, cy - up // 2)
         frame = (w, h)
@@ -961,6 +964,41 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
     return _finalize_cities(cities)
 
 
+def _own_close_plate_px() -> int:
+    """Same Bardur plate can hash two tiles just outside cluster-merge.
+
+    Live T46 Orkork: c15_24 @(541,657) + c16_24 @(574,667) ≈35px (cluster
+    merge is 32px @ 1280 so both survive). Neighbor cities sit ~80px; a
+    64px radius ate those.
+    """
+    try:
+        fw, fh = coords.frame()
+    except Exception:
+        fw, fh = 1280, 800
+    if fw <= 0 or fh <= 0:
+        fw, fh = 1280, 800
+    pitch = combat.hex_pitch(fw, fh)
+    return max(38, int(round(pitch * 1.2)))
+
+
+def _with_city_extras(win: dict[str, Any], lose: dict[str, Any]) -> dict[str, Any]:
+    """Keep the winning fragment; copy name / evidence from the other half."""
+    out = dict(win)
+    if lose.get("name") and not out.get("name"):
+        out["name"] = lose["name"]
+    ev = list(out.get("evidence") or [])
+    for item in lose.get("evidence") or []:
+        if item not in ev:
+            ev.append(item)
+    if ev:
+        out["evidence"] = ev
+    if int(lose.get("n") or 0) > int(out.get("n") or 0):
+        out["n"] = lose["n"]
+    if int(lose.get("w") or 0) > int(out.get("w") or 0):
+        out["w"] = lose["w"]
+    return out
+
+
 def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
     """Same hex → one city. Own Bardur must not be eaten by a nearby Vengir FP.
 
@@ -978,9 +1016,10 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         # half of Disrof). A 64px radius ate nearby Bardur (live: cities_own=2).
         return 0
     if oa == "own" and ob == "own":
-        # Neighbor Bardur 1 hex apart: banners kiss (~36–80px) but they are
-        # two cities. Live cities_own stayed 3–4 while more sat on screen.
-        return 0
+        # Same city can hash two tiles ~1 pitch apart (live Orkork c15_24 +
+        # c16_24 at ~35px). True 1-hex neighbors sit ~80px — a 64px radius
+        # ate those. Merge only the close-plate / same-hex split.
+        return _own_close_plate_px()
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
         # Same nameplate still merges via tile / plate overlap above.
@@ -1060,13 +1099,17 @@ def _prefer_city(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         if a.get("name") and not win.get("name"):
             win["name"] = a["name"]
         return win
+    if a.get("owner") == "own" and b.get("owner") == "own":
+        if int(a.get("n") or 0) != int(b.get("n") or 0):
+            win, lose = (a, b) if int(a.get("n") or 0) > int(b.get("n") or 0) else (b, a)
+            return _with_city_extras(win, lose)
     if a.get("name") and not b.get("name"):
-        return a
+        return _with_city_extras(a, b)
     if b.get("name") and not a.get("name"):
-        return b
+        return _with_city_extras(b, a)
     if float(a.get("confidence") or 0) >= float(b.get("confidence") or 0):
-        return a
-    return b
+        return _with_city_extras(a, b)
+    return _with_city_extras(b, a)
 
 
 def _hud_bottom(frame_h: int | None = None) -> int:
@@ -1116,12 +1159,15 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
 def _is_real_own_hit(c: dict[str, Any]) -> bool:
     """Ufla-class Bardur: frost plate + gold star (or roof lamps). Bare frost is a ghost.
 
-    Live T46 Game Stats: Bardur 2 cities; observe listed 5–7 unnamed phantoms.
-    Later smoke: 3 on screen (Orkork/Bufla/Grugri) vs 4 with HUD/fog c18_1.
+    Live T46 Game Stats: Bardur 2 cities (Bufla + Orkork). Observe listed
+    5–7 unnamed phantoms, then 4 after HUD drop (Orkork split + mid-map
+    c12_16). Sparse-wood frost plates are dropped in find_cities.
     """
     if c.get("owner") != "own":
         return False
     if _own_hit_in_top_chrome(c):
+        return False
+    if c.get("warm_n") is not None and int(c.get("warm_n") or 0) < 500:
         return False
     name = str(c.get("name") or "").strip()
     if len(name) >= 4:

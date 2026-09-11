@@ -592,6 +592,23 @@ def _draw_bardur_city(d, cx: int, plate_y: int) -> None:
     d.ellipse((cx + 34, plate_y - 6, cx + 50, plate_y + 8), fill=(224, 188, 63))
 
 
+def _draw_orkork_split_plate(d, cx: int = 557, plate_y: int = 667) -> None:
+    """One Orkork longhouse whose frost plate splits ~35px (c15_24 + c16_24)."""
+    d.rectangle((cx - 32, plate_y - 78, cx + 32, plate_y - 18), fill=(90, 85, 80))
+    d.rectangle((527, 657, 555, 677), fill=(180, 180, 178))
+    d.rectangle((533, 662, 538, 672), fill=(40, 40, 40))
+    d.rectangle((560, 667, 588, 687), fill=(180, 180, 178))
+    d.ellipse((572, 670, 586, 684), fill=(224, 188, 63))
+
+
+def _draw_mid_map_own_phantom(d, cx: int = 441, plate_y: int = 480) -> None:
+    """Sparse mountain wood + frost streak + fruit gold — live c12_16 @(441,455)."""
+    d.rectangle((cx - 28, plate_y - 50, cx + 28, plate_y - 12), fill=(110, 112, 118))
+    d.rectangle((cx - 10, plate_y - 40, cx + 4, plate_y - 18), fill=(90, 85, 80))
+    d.rectangle((cx - 48, plate_y - 8, cx + 48, plate_y + 10), fill=(180, 180, 178))
+    d.ellipse((cx + 28, plate_y - 4, cx + 42, plate_y + 8), fill=(224, 188, 63))
+
+
 def _draw_disrof_city(d, cx: int, plate_y: int, lamps: bool = True, roof: bool = True) -> None:
     """Moonrise Disrof: dark stone + magenta roof and/or gold window lamps."""
     d.rectangle((cx - 35, plate_y - 82, cx + 35, plate_y - 20), fill=(90, 85, 80))
@@ -1822,7 +1839,7 @@ def test_bardur_wood_shadow_stays_own():
 
 
 def test_three_bardur_not_hud_fog_c18_1():
-    """Live T46 after PR #30: cities_own=4 vs ~3 on screen. c18_1 @ y≈45 is HUD frost."""
+    """Three real longhouses stay cities_own; HUD/fog c18_1 @ y≈45 does not."""
     from polytopia_api.detect import as_rgb
     from polytopia_api.entities import observe_map, session_cities
 
@@ -1830,7 +1847,7 @@ def test_three_bardur_not_hud_fog_c18_1():
     coords.set_frame(1280, 800)
     im = Image.new("RGB", (1280, 800), (22, 24, 28))
     d = ImageDraw.Draw(im)
-    # Orkork / Bufla / Grugri — the three visible Bardur cities.
+    # Three real Bardur longhouses (not the T46 two-city board).
     _draw_bardur_city(d, 280, 280)
     _draw_bardur_city(d, 520, 420)
     _draw_bardur_city(d, 760, 560)
@@ -1867,6 +1884,79 @@ def test_three_bardur_not_hud_fog_c18_1():
     ids = {c["id"] for c in out if c.get("owner") == "own"}
     assert ids == {"c7_16", "c12_16", "c16_24"}, out
     assert "c18_1" not in ids
+
+
+def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
+    """Live T46 after #31: Game Stats Bardur 2; observe listed 4.
+
+    Leftover junk: Orkork c15_24@(541,657)+c16_24@(574,667) ~35px, and mid-map
+    phantom c12_16@(441,455). Grugru is Vengir, not a third Bardur city.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map, session_cities
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 250, 280)  # Bufla
+    _draw_orkork_split_plate(d)
+    _draw_mid_map_own_phantom(d)
+    _draw_bardur_city(d, 648, 64)  # HUD/fog c18_1
+    _draw_disrof_city(d, 980, 260)
+    _draw_disrof_city(d, 1100, 420)
+    _draw_disrof_city(d, 1040, 580)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    xs = sorted(int(c["x"]) for c in own)
+    ys = [int(c["y"]) for c in own]
+    assert any(abs(x - 250) < 40 for x in xs), own
+    assert any(abs(x - 557) < 50 for x in xs), own
+    assert all(not (abs(int(c["x"]) - 441) < 30 and abs(int(c["y"]) - 455) < 40) for c in own), own
+    assert all(int(c.get("y") or 0) > 96 for c in own), own
+    vengir = [c for c in mapped["cities_enemy"] if c.get("tribe") == "vengir"]
+    assert vengir, mapped["cities"]
+    # Close pair must not survive as two own ids ~35px apart.
+    for i, a in enumerate(own):
+        for b in own[i + 1 :]:
+            d2 = (int(a["x"]) - int(b["x"])) ** 2 + (int(a["y"]) - int(b["y"])) ** 2
+            assert d2 > 48 * 48, own
+
+    left = _own_city(15, y=657)
+    left["id"] = left["city_id"] = "c15_24"
+    left["tile"] = [15, 24]
+    left["x"], left["y"] = 541, 657
+    left["tile_xy"] = [541, 657]
+    left["plate_y"] = 657
+    left["n"] = 884
+    left["w"] = 56
+    right = _own_city(16, y=667)
+    right["id"] = right["city_id"] = "c16_24"
+    right["tile"] = [16, 24]
+    right["x"], right["y"] = 574, 667
+    right["tile_xy"] = [574, 667]
+    right["plate_y"] = 667
+    right["n"] = 90
+    right["w"] = 29
+    bufla = _own_city(7, y=265)
+    bufla["id"] = bufla["city_id"] = "c7_16"
+    bufla["tile"] = [7, 16]
+    bufla["x"], bufla["y"] = 253, 265
+    phantom = {
+        "id": "c12_16", "city_id": "c12_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 441, "y": 455, "plate_y": 480, "tile": [12, 16], "n": 1144, "w": 61,
+        "warm_n": 345, "seen": True,
+    }
+    out = session_cities([bufla, left, right, phantom])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert "c7_16" in own_ids, out
+    assert not ({"c15_24", "c16_24"} <= own_ids), out
+    assert "c12_16" not in own_ids, out
+    assert len([c for c in out if c.get("owner") == "own"]) == 2, out
 
 
 def test_two_bardur_match_screen_not_frost_phantoms():
@@ -4511,6 +4601,7 @@ if __name__ == "__main__":
     test_bardur_wood_shadow_stays_own()
     test_two_bardur_match_screen_not_frost_phantoms()
     test_three_bardur_not_hud_fog_c18_1()
+    test_two_bardur_dedupe_orkork_split_and_mid_phantom()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()

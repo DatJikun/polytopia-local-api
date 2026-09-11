@@ -29,7 +29,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_observe",
-        "description": "Screenshot observe: HUD, stable units/cities (Bardur stay cities_own even 1 hex from Vengir and never flip own→enemy; cities_own matches the screen count — frost-plate + gold star/lamps on wood below the HUD, unnamed/HUD-fog phantoms (c18_1 y≈45) drop and do not sticky-grow 2→5–7 or 3→4; visible Vengir stay cities_enemy even when cities_own is full / 12+ Bardur; distinct Disrof/Rzgórst do not merge at 80px; Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
+        "description": "Screenshot observe: HUD, stable units/cities (Bardur stay cities_own even 1 hex from Vengir and never flip own→enemy; cities_own matches Game Stats / screen count — frost-plate + gold star/lamps on a longhouse below the HUD; same-hex / close-plate splits (~35px Orkork c15_24+c16_24) merge; unnamed/HUD-fog (c18_1 y≈45) and sparse mid-map plates (c12_16) drop and do not sticky-grow 2→4–7; visible Vengir stay cities_enemy even when cities_own is full / 12+ Bardur; distinct Disrof/Rzgórst do not merge at 80px; Disrof stays cities_enemy while a friendly unit is on the port/mountain next to it; those units keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
