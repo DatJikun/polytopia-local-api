@@ -887,7 +887,9 @@ def _city_merge_limit(a: dict[str, Any], b: dict[str, Any], dist: int) -> int:
         return 0
     tribes = {a.get("tribe"), b.get("tribe")}
     if tribes == {"vengir"}:
-        return max(dist, 80)
+        # Same nameplate still merges via tile / plate overlap above.
+        # Do not collapse Disrof + Rzgórst at 80px on a zoomed late-game map.
+        return 0
     return dist
 
 
@@ -980,18 +982,21 @@ def session_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _finalize_cities(kept)
 
 
-# Live T44: cities_own filled the old combined [:12] and cities_enemy went [].
-MAX_CITIES_OWN = 16
-MAX_CITIES_ENEMY = 12
+# Late Domination can show 12+ Bardur. Never steal those slots from enemies.
+MAX_CITIES_OWN = 24
 
 
 def _finalize_cities(cities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Cap own and enemy separately so a full Bardur list cannot drop Disrof."""
+    """Keep every real enemy city. A 12-own map must not empty cities_enemy.
+
+    Frost FPs are already capped in _cap_vengir. Do not slice magenta/gold
+    Disrof-class hits (PR #21: empty cities_enemy while Vengir are on screen).
+    """
     cities = _cap_vengir(_dedupe_cities(cities))
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]
     other = [c for c in cities if c.get("owner") not in {"own", "enemy"}]
-    return enemy[:MAX_CITIES_ENEMY] + own[:MAX_CITIES_OWN] + other
+    return enemy + own[:MAX_CITIES_OWN] + other
 
 
 def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[dict[str, Any]]:
@@ -1026,7 +1031,8 @@ def _cap_vengir(cities: list[dict[str, Any]], unnamed_limit: int = 2) -> list[di
 
     real.sort(key=_score, reverse=True)
     frost_fp.sort(key=_score, reverse=True)
-    return others + named + real + frost_fp[:unnamed_limit]
+    # Real enemies first so a later own-city cap cannot drop Disrof/Rzgórst.
+    return named + real + frost_fp[:unnamed_limit] + others
 
 
 def _dedupe_cities(cities: list[dict[str, Any]], dist: int = 56) -> list[dict[str, Any]]:

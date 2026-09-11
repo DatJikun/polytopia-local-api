@@ -1570,6 +1570,157 @@ def test_dark_magenta_roof_classifies_vengir():
     assert classify_tribe((90, 85, 80)) == "bardur"
 
 
+def _own_city(i: int, y: int = 200) -> dict:
+    return {
+        "id": f"c{i}_0",
+        "city_id": f"c{i}_0",
+        "tribe": "bardur",
+        "owner": "own",
+        "x": 80 + (i % 6) * 180,
+        "y": y + (i // 6) * 160,
+        "tile": [i, 0],
+        "tile_xy": [80 + (i % 6) * 180, y + (i // 6) * 160],
+        "n": 200,
+        "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star"],
+        "w": 48,
+        "h": 20,
+        "plate_y": y + (i // 6) * 160,
+    }
+
+
+def _enemy_city(cid: str, tile: list[int], x: int, y: int, **extra) -> dict:
+    ev = extra.pop("evidence", ["magenta_roof", "gold_lamps", "frost_plate"])
+    return {
+        "id": cid,
+        "city_id": cid,
+        "tribe": "vengir",
+        "owner": "enemy",
+        "name": None,
+        "confidence": 0.78,
+        "evidence": ev,
+        "x": x,
+        "y": y,
+        "tile": tile,
+        "tile_xy": [x, y],
+        "n": extra.pop("n", 400),
+        "w": extra.pop("w", 90),
+        "h": extra.pop("h", 22),
+        **extra,
+    }
+
+
+def test_twelve_own_cities_do_not_drop_enemy_or_flood_frost():
+    """T45: 12 Bardur + two Disrof-class + frost swarm. Real enemies stay; frost ≤2."""
+    from polytopia_api.entities import session_cities
+
+    own = [_own_city(i) for i in range(12)]
+    enemies = [
+        _enemy_city("c20_5", [20, 5], 900, 300),
+        _enemy_city("c22_8", [22, 8], 1100, 520, evidence=["magenta_roof", "frost_plate"]),
+        _enemy_city("c18_3", [18, 3], 700, 640, evidence=["gold_lamps", "frost_plate"]),
+    ]
+    frost = [
+        _enemy_city(f"c3_{i}", [3, i], 40 + i * 30, 80, evidence=["frost_plate"], n=50, confidence=0.64)
+        for i in range(5)
+    ]
+    out = session_cities(own + enemies + frost)
+    enemy = [c for c in out if c.get("owner") == "enemy"]
+    ids = {c["id"] for c in enemy}
+    assert {"c20_5", "c22_8", "c18_3"} <= ids, out
+    assert all(c.get("tribe") == "vengir" and c.get("tile") for c in enemy if c["id"] in {"c20_5", "c22_8", "c18_3"})
+    assert len([c for c in out if c.get("owner") == "own"]) == 12
+    frost_only = [
+        c
+        for c in enemy
+        if "magenta_roof" not in (c.get("evidence") or [])
+        and "gold_lamps" not in (c.get("evidence") or [])
+    ]
+    assert len(frost_only) <= 2, frost_only
+
+
+def test_session_cities_keeps_sticky_enemy_when_own_is_full():
+    """Mid-fight miss of Disrof must not vanish behind 12 own cities."""
+    from polytopia_api.entities import session_cities
+    from polytopia_api.observe import stabilize
+
+    prev = [_own_city(i) for i in range(12)] + [_enemy_city("c13_10", [13, 10], 880, 310)]
+    nxt = [_own_city(i) for i in range(12)]
+    out = session_cities(stabilize(nxt, prev, keep_missing=True))
+    ids = {c["id"] for c in out}
+    assert "c13_10" in ids, out
+    hit = next(c for c in out if c["id"] == "c13_10")
+    assert hit["owner"] == "enemy" and hit["tribe"] == "vengir"
+    assert hit.get("seen") is False
+    assert hit.get("tile") == [13, 10]
+
+
+def test_distinct_vengir_do_not_merge_at_80px():
+    """Zoomed late map: Disrof vs Rzgórst ~72px apart must stay two cities.
+
+    Old _city_merge_limit used max(dist, 80) for any two Vengir hits.
+    Same-nameplate fragments still merge via tile / plate overlap.
+    """
+    from polytopia_api.entities import _dedupe_cities, session_cities
+
+    a = _enemy_city("c10_4", [10, 4], 400, 300, w=10, plate_y=300)
+    b = _enemy_city(
+        "c12_4",
+        [12, 4],
+        472,
+        300,
+        w=10,
+        plate_y=330,
+        evidence=["magenta_roof", "frost_plate"],
+    )
+    out = _dedupe_cities([a, b])
+    ids = {c["id"] for c in out}
+    assert ids == {"c10_4", "c12_4"}, out
+    kept = session_cities(out)
+    assert {c["id"] for c in kept} >= {"c10_4", "c12_4"}
+
+
+def test_late_domination_observe_keeps_visible_vengir():
+    """Pixel contract: 12 Bardur on screen + Disrof/Rzgórst still fill cities_enemy."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    bardur_xy = [
+        (180, 200), (420, 200), (660, 200), (900, 200),
+        (180, 420), (420, 420), (660, 420), (900, 420),
+        (180, 640), (420, 640), (660, 640), (900, 640),
+    ]
+    for cx, py in bardur_xy:
+        _draw_bardur_city(d, cx, py)
+    _draw_disrof_city(d, 1500, 280)   # Disrof / Disrot
+    _draw_disrof_city(d, 1740, 520)   # Rzgórst-class
+    for x0, y0 in ((80, 160), (1100, 170), (1280, 360), (1400, 700)):
+        d.rectangle((x0, y0, x0 + 110, y0 + 22), fill=(180, 180, 178))
+        d.rectangle((x0 + 12, y0 + 6, x0 + 18, y0 + 16), fill=(40, 40, 40))
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) >= 12, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert vengir, mapped["cities"]
+    assert all(c["owner"] == "enemy" for c in vengir)
+    assert all(c.get("city_id") == c.get("id") and c.get("tile") and c.get("tile_xy") for c in vengir), vengir
+    xs = [int(c["x"]) for c in vengir]
+    assert any(abs(x - 1500) < 80 for x in xs), vengir
+    assert any(abs(x - 1740) < 80 for x in xs), vengir
+    strong = [
+        c
+        for c in vengir
+        if "magenta_roof" in (c.get("evidence") or []) or "gold_lamps" in (c.get("evidence") or [])
+    ]
+    assert len(strong) >= 2, vengir
+    frost_only = [c for c in vengir if c not in strong]
+    assert len(frost_only) <= 2, frost_only
+
+
 def test_unit_id_stays_resolvable_after_observe_drops_it():
     """Live: after /attack timeout, next call was 'no entity u2'."""
     from unittest.mock import patch
@@ -3551,6 +3702,10 @@ if __name__ == "__main__":
     test_twelve_own_cities_do_not_wipe_enemy()
     test_t44_dark_tile_vengir_stay_cities_enemy()
     test_dark_magenta_roof_classifies_vengir()
+    test_twelve_own_cities_do_not_drop_enemy_or_flood_frost()
+    test_session_cities_keeps_sticky_enemy_when_own_is_full()
+    test_distinct_vengir_do_not_merge_at_80px()
+    test_late_domination_observe_keeps_visible_vengir()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
     test_move_to_never_returns_ok_null()
