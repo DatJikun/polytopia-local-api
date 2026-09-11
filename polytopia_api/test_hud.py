@@ -2210,6 +2210,292 @@ def test_move_to_clicks_foot_not_roof_centroid():
     reset_obs()
 
 
+def _m20_disrof_port_east(
+    im: Image.Image,
+    hp_bar: bool = True,
+    cover_roof: bool = False,
+    cover_plate_right: bool = False,
+) -> None:
+    """Live T37: Disrof on screen, Bardur on the port immediately east."""
+    d = ImageDraw.Draw(im)
+    d.rectangle((630, 130, 720, 200), fill=(80, 200, 240))
+    d.rectangle((632, 150, 678, 184), fill=(120, 90, 70))
+    d.rectangle((565, 100, 635, 165), fill=(90, 85, 80))
+    d.rectangle((580, 95, 620, 130), fill=(150, 74, 144))
+    if cover_roof:
+        d.ellipse((572, 88, 628, 138), fill=(48, 36, 58))
+    d.rectangle((550, 168, 650, 188), fill=(180, 180, 178))
+    d.rectangle((558, 172, 570, 184), fill=(224, 188, 63))
+    d.rectangle((588, 172, 600, 184), fill=(224, 188, 63))
+    d.rectangle((575, 174, 578, 182), fill=(40, 40, 40))
+    if cover_plate_right:
+        d.rectangle((612, 166, 650, 188), fill=(110, 85, 72))
+    d.rectangle((640, 154, 664, 178), fill=(110, 85, 72))
+    if hp_bar:
+        d.rectangle((642, 146, 660, 151), fill=(90, 210, 50))
+    d.rectangle((636, 458, 652, 461), fill=(90, 210, 50))
+    d.rectangle((638, 466, 650, 486), fill=(110, 85, 72))
+
+
+def _t37_disrof(mapped):
+    enemy = mapped["cities_enemy"]
+    assert enemy, mapped["cities"]
+    disrof = min(
+        enemy,
+        key=lambda c: abs(int(c["x"]) - 600) + abs(int(c.get("tile_xy", [0, c["y"]])[1]) - 144),
+    )
+    assert abs(int(disrof["x"]) - 600) < 80, disrof
+    assert disrof.get("tribe") == "vengir" and disrof.get("owner") == "enemy", disrof
+    own_at = [c for c in mapped["cities_own"] if abs(int(c["x"]) - 600) < 50]
+    assert not own_at, own_at
+    return disrof
+
+
+def test_observe_keeps_disrof_with_unit_on_east_port():
+    """Live T37: cities_enemy [] while Disrof was on screen with a Bardur on the east port."""
+    from polytopia_api.combat import hex_pitch, tile_dist
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_port_east(im, hp_bar=True)
+    mapped = observe_map(as_rgb(im))
+    disrof = _t37_disrof(mapped)
+    near = [
+        u
+        for u in mapped["units"]
+        if int(u["x"]) >= 620 and 140 <= int(u["y"]) <= 200
+    ]
+    assert near, mapped["units"]
+    u = near[0]
+    assert u.get("owner") in {"own", "unknown"} or u.get("tribe") in {"bardur", "unknown"}
+    assert u.get("tile")
+    pitch = hex_pitch(1280, 800)
+    origin = (int(disrof["x"]), int(disrof.get("plate_y") or disrof["y"]))
+    assert tile_dist(int(u["x"]), int(u["y"]), origin[0], origin[1], pitch) <= 2.3, (u, origin, disrof)
+    assert any(int(u["y"]) >= 430 for u in mapped["units"]), mapped["units"]
+
+
+def test_observe_keeps_disrof_when_garrison_covers_roof():
+    """Garrison on the city hex must not empty cities_enemy."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_port_east(im, hp_bar=True, cover_roof=True, cover_plate_right=True)
+    mapped = observe_map(as_rgb(im))
+    disrof = _t37_disrof(mapped)
+    near = [
+        u
+        for u in mapped["units"]
+        if int(u["x"]) >= 620 and 140 <= int(u["y"]) <= 200
+    ]
+    assert near, (mapped["units"], disrof)
+
+
+def test_observe_east_port_unit_without_hp_bar():
+    """Port-east leather still counts when the nameplate/garrison covers the lime bar."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_port_east(im, hp_bar=False)
+    mapped = observe_map(as_rgb(im))
+    _t37_disrof(mapped)
+    near = [
+        u
+        for u in mapped["units"]
+        if int(u["x"]) >= 620 and 140 <= int(u["y"]) <= 200
+    ]
+    assert near, mapped["units"]
+    assert any(u.get("owner") == "own" or u.get("tribe") == "bardur" for u in near), near
+
+
+def test_sticky_disrof_stays_enemy_if_frame_flips_bardur():
+    """A later observe that samples the adjacent Bardur must not invent cities_own."""
+    from polytopia_api.observe import stabilize
+
+    prev = [{
+        "id": "c17_5",
+        "city_id": "c17_5",
+        "tile": [17, 5],
+        "tile_xy": [600, 144],
+        "x": 600,
+        "y": 144,
+        "plate_y": 178,
+        "tribe": "vengir",
+        "owner": "enemy",
+        "name": None,
+        "evidence": ["magenta_roof", "gold_lamps", "frost_plate"],
+        "confidence": 0.78,
+        "n": 400,
+    }]
+    nxt = [{
+        "id": "c17_5",
+        "city_id": "c17_5",
+        "tile": [17, 5],
+        "x": 602,
+        "y": 146,
+        "plate_y": 180,
+        "tribe": "bardur",
+        "owner": "own",
+        "evidence": ["frost_plate", "gold_star"],
+        "confidence": 0.72,
+        "n": 380,
+    }]
+    out = stabilize(nxt, prev, keep_missing=True)
+    hit = [c for c in out if c.get("id") == "c17_5"]
+    assert hit and hit[0]["tribe"] == "vengir" and hit[0]["owner"] == "enemy", hit
+    assert "magenta_roof" in (hit[0].get("evidence") or [])
+
+
+def test_move_to_adjacent_empty_marks_clicks_city_foot():
+    """Live T39: u3→c14_24 tile_dist≈0.94 / move_range=1 returned no_move_marks."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, register_units, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c14_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [14, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    register_units([{"id": "u3", "kind": "unit", "x": 164, "y": 80, "owner": "own"}])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [],
+        "units": [{"id": "u3", "x": 164, "y": 80, "owner": "own", "seen": True}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior", "settings": False},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **before,
+        "units": [{"id": "u3", "x": 201, "y": 94, "owner": "own", "seen": True}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": before["unit"]}
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u3", city_id="c14_24")
+    assert r.get("reason") != "no_move_marks", r
+    assert r.get("reason") != "need x,y or city_id/to_id", r
+    assert clicks, clicks
+    assert clicks[0][1] > 81, clicks
+    assert (200, 80) not in clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    reset_obs()
+
+
+def test_second_move_to_resolves_sticky_city_id():
+    """Live T39: follow-up u4→c14_24 said need x,y despite passing city_id."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c14_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [14, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    blank = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [],
+        "cities_own": [],
+        "cities_enemy": [],
+        "units": [{"id": "u4", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "move_marks": [],
+        "attack_marks": [],
+        "overlay": {},
+        "ready": {},
+        "hud": {"turn": 3, "turn_trusted": False},
+        "turn_diff": None,
+    }
+    after = {
+        **blank,
+        "units": [{"id": "u4", "x": 201, "y": 94, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    selected = {"ok": True, "unit": blank["unit"]}
+    with patch.object(commands, "remember", return_value=blank), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u4", city_id="c14_24")
+    assert r.get("reason") != "need x,y or city_id/to_id", r
+    assert r.get("dest") and r["dest"]["id"] == "c14_24", r
+    assert clicks, clicks
+    reset_obs()
+
+
+def test_lookup_city_id_ignores_units():
+    from polytopia_api.observe import lookup, register_cities, reset as reset_obs
+
+    reset_obs()
+    city = {"id": "c14_24", "city_id": "c14_24", "kind": "city", "x": 200, "y": 80, "tile": [14, 24]}
+    register_cities([city])
+    mem = {
+        "cities": [],
+        "cities_enemy": [],
+        "units": [{"id": "u4", "x": 10, "y": 10, "near_city_id": "c14_24", "city_id": "c14_24"}],
+        "move_marks": [{"id": "c14_24", "x": 1, "y": 1}],
+    }
+    hit = lookup(mem, "c14_24")
+    assert hit and hit.get("kind") == "city" and hit.get("x") == 200, hit
+    reset_obs()
+
+
 if __name__ == "__main__":
     test_parse_hud()
     test_parse_unit()
@@ -2264,4 +2550,11 @@ if __name__ == "__main__":
     test_find_units_keeps_mountain_south_of_city()
     test_select_unit_prefers_live_over_ghost_sticky()
     test_move_to_clicks_foot_not_roof_centroid()
+    test_observe_keeps_disrof_with_unit_on_east_port()
+    test_observe_keeps_disrof_when_garrison_covers_roof()
+    test_observe_east_port_unit_without_hp_bar()
+    test_sticky_disrof_stays_enemy_if_frame_flips_bardur()
+    test_move_to_adjacent_empty_marks_clicks_city_foot()
+    test_second_move_to_resolves_sticky_city_id()
+    test_lookup_city_id_ignores_units()
     print("ok")

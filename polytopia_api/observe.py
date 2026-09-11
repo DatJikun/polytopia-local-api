@@ -98,12 +98,26 @@ def register_units(units: list[dict[str, Any]] | None) -> None:
 
 def lookup(obs: dict[str, Any] | None, ident: str) -> dict[str, Any] | None:
     ident = str(ident)
-    keys = ("units", "cities", "cities_own", "cities_enemy", "villages", "move_marks", "fruit", "attack_marks")
-    if ident.startswith("c"):
-        keys = ("cities", "cities_own", "cities_enemy") + keys
-    elif ident.startswith("u"):
-        keys = ("units",) + keys
     low = ident.lower()
+    # city_id must not match a unit / leftover mark. Second /move-to on
+    # c14_24 live-returned need x,y when lookup wandered off cities.
+    if ident.startswith("c") or _is_grid_city_id(ident):
+        if obs:
+            for key in ("cities", "cities_own", "cities_enemy"):
+                for it in obs.get(key) or []:
+                    if str(it.get("id")) == ident:
+                        return it
+                    if str(it.get("city_id") or "") == ident:
+                        return it
+                    if str(it.get("id_alias") or "") == ident:
+                        return it
+                    name = it.get("name")
+                    if name and str(name).lower() == low:
+                        return it
+        return lookup_city(ident)
+    keys = ("units", "cities", "cities_own", "cities_enemy", "villages", "move_marks", "fruit", "attack_marks")
+    if ident.startswith("u"):
+        keys = ("units",) + keys
     if obs:
         for key in keys:
             for it in obs.get(key) or []:
@@ -112,15 +126,11 @@ def lookup(obs: dict[str, Any] | None, ident: str) -> dict[str, Any] | None:
                 name = it.get("name")
                 if name and str(name).lower() == low:
                     return it
-                if ident.startswith("c") and str(it.get("id_alias") or "") == ident:
-                    return it
-                if ident.startswith("c") and str(it.get("city_id") or "") == ident:
-                    return it
                 if ident.startswith("u") and str(it.get("id_alias") or "") == ident:
                     return it
     if ident.startswith("u"):
         return lookup_unit(ident)
-    if ident.startswith("c") or ident[:1].isalpha():
+    if ident[:1].isalpha():
         return lookup_city(ident) or lookup_unit(ident)
     return None
 
@@ -163,11 +173,27 @@ def _sticky_city_fields(d: dict[str, Any], src: dict[str, Any]) -> None:
     src_tribe = str(src.get("tribe") or "")
     dst_tribe = str(d.get("tribe") or "")
     # Keep frost-plate Disrof as enemy. A later grey-stone sample must not
-    # invent cities_own from the same city_id.
+    # invent cities_own from the same city_id — including when a friendly
+    # unit stands on the port/mountain next to it.
     if src_tribe == "vengir" and str(src.get("owner") or "") == "enemy":
-        if dst_tribe in {"oumaji", "bardur", "unknown", ""}:
+        if dst_tribe in {"oumaji", "bardur", "unknown", ""} or str(d.get("owner") or "") == "own":
             d["tribe"] = "vengir"
             d["owner"] = "enemy"
+        ev = list(src.get("evidence") or [])
+        if ev:
+            cur = list(d.get("evidence") or [])
+            for item in ev:
+                if item not in cur:
+                    cur.append(item)
+            d["evidence"] = cur
+        if src.get("tile") and not d.get("tile"):
+            d["tile"] = list(src["tile"])
+        if src.get("tile_xy") and not d.get("tile_xy"):
+            d["tile_xy"] = list(src["tile_xy"])
+        if src.get("plate_y") is not None and d.get("plate_y") is None:
+            d["plate_y"] = src["plate_y"]
+        if src.get("kind") and not d.get("kind"):
+            d["kind"] = src["kind"]
     elif src_tribe == "vengir" and dst_tribe == "oumaji":
         d["tribe"] = "vengir"
         d["owner"] = "own" if str(src.get("owner") or "") == "own" else "enemy"
@@ -413,7 +439,15 @@ def observe(shot: Any | None = None, mode: str = "full") -> dict[str, Any]:
         villages_enabled = mapped.get("villages_enabled", False)
     prev_turn = ((prev or {}).get("hud") or {}).get("turn")
     new_turn = (hud or {}).get("turn")
-    if prev_turn is not None and new_turn is not None and prev_turn != new_turn:
+    # Mid-turn HUD OCR flicker (T39→3) must not wipe sticky c14_24.
+    # Only a trusted *increase* is a new turn.
+    if (
+        not light
+        and prev_turn is not None
+        and new_turn is not None
+        and int(new_turn) > int(prev_turn)
+        and snapshot.hud_turn_trusted(hud)
+    ):
         _CITY_INDEX.clear()
         _UNIT_INDEX.clear()
         prev = None
