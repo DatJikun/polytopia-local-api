@@ -65,6 +65,9 @@ def city_id_for_tile(gx: int, gy: int) -> str:
 ON_CITY_MARK_HEX = 0.65
 # HP bars sit above sprites; 0.4 missed riders on Disrof, 1.15 counted adjacent.
 STANDING_HEX = 0.8
+# Capture panel is game-truth for standing ON the city. The HP bar often sits
+# on the nameplate (~1.0 from walk), so STANDING_HEX missed live Disrof.
+CAPTURE_STANDING_HEX = 1.4
 
 
 def city_tile_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tuple[int, int] | None:
@@ -356,7 +359,9 @@ def unit_on_city(
             continue
         if want_owner:
             owner = str(u.get("owner") or "")
-            if owner and owner != want_owner:
+            if owner and owner != want_owner and not (
+                want_owner == "own" and owner == "unknown"
+            ):
                 continue
         for cx, cy in centers:
             try:

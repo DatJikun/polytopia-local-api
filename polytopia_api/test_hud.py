@@ -213,7 +213,9 @@ def test_capture_and_recruit_targets():
         "ready": {"capture": True},
         "unit": {"capture": True},
     }
-    assert capture_target(obs) is None  # map DO IT is not Capture
+    ocr_hit = capture_target(obs)
+    assert ocr_hit is not None and ocr_hit != (10, 20), ocr_hit
+    assert ocr_hit[1] >= int(1200 * 0.78), ocr_hit  # UNIT_CROP, not map DO IT
     panel = {
         "layout": {"frame": [1920, 1200]},
         "overlay": {
@@ -2204,6 +2206,96 @@ def test_move_to_from_mountain_unit_stands_on_city():
     reset_obs()
 
 
+def test_capture_when_on_disrof_with_capture_flag():
+    """Live: unit ON Disrof, panel says Capture, API returned not_standing_on_city.
+
+    HP bar / sticky coords sit ~1.0 hex from walk (nameplate / east-port listing).
+    Capture button is game-truth for standing ON the city.
+    """
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c17_5",
+        "kind": "city",
+        "x": 600,
+        "y": 144,
+        "plate_y": 178,
+        "tile": [17, 5],
+        "tile_xy": [600, 144],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    blob = {"x": 180, "y": 740, "n": 200}
+    # Sticky / HP-bar listing still at the east-port hex (~1.0 from walk).
+    on_flag = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "units": [{"id": "u4", "x": 636, "y": 162, "owner": "own", "near_city_id": "c17_5", "near_city_hex": 1.0}],
+        "unit": {"capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+        "overlay": {"capture_blobs": [blob]},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **on_flag,
+        "cities_enemy": [],
+        "cities_own": [{**city, "owner": "own", "tribe": "bardur"}],
+        "unit": {"capture": False},
+        "ready": {},
+    }
+    with patch.object(commands, "remember", return_value=on_flag), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        cap = commands.capture(city_id="c17_5")
+    assert cap.get("ok") is True and cap.get("captured") is True, cap
+    assert clicks == [(180, 740)], clicks
+
+    clicks.clear()
+    ocr_only = {
+        **on_flag,
+        "units": [{"id": "u4", "x": 600, "y": 178, "owner": "unknown"}],
+        "overlay": {"capture_blobs": [], "do_it_blobs": [{"x": 400, "y": 400, "n": 800}]},
+    }
+    with patch.object(commands, "remember", return_value=ocr_only), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        cap = commands.capture(city_id="c17_5")
+    assert cap.get("ok") is True and cap.get("captured") is True, cap
+    assert clicks and clicks[0][1] >= int(800 * 0.78), clicks
+    assert clicks[0] != (400, 400)
+
+    clicks.clear()
+    adjacent_no_flag = {
+        **on_flag,
+        "unit": {"capture": False, "can_move": True, "unit": "warrior"},
+        "ready": {},
+        "overlay": {},
+    }
+    with patch.object(commands, "remember", return_value=adjacent_no_flag), patch.object(
+        commands, "observe", return_value=adjacent_no_flag
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        cap = commands.capture(city_id="c17_5")
+    assert cap.get("ok") is False and cap.get("reason") == "not_standing_on_city", cap
+    assert clicks == []
+    reset_obs()
+
+
 def test_attack_fast_no_mark_not_timeout():
     """Negative /attack must return no_mark quickly — not burn the 7.5s budget."""
     from unittest.mock import patch
@@ -2467,6 +2559,7 @@ if __name__ == "__main__":
     test_sticky_disrof_stays_enemy_if_frame_flips_bardur()
     test_stabilize_units_matches_by_tile()
     test_move_to_from_mountain_unit_stands_on_city()
+    test_capture_when_on_disrof_with_capture_flag()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
     test_find_units_keeps_mountain_south_of_city()

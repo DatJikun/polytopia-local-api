@@ -316,19 +316,42 @@ def _city_click_misfire(
     return False
 
 
+def _unit_tagged_on_city(obs: dict[str, Any], dest: dict[str, Any] | None) -> dict[str, Any] | None:
+    cid = str((dest or {}).get("id") or (dest or {}).get("city_id") or "")
+    if not cid:
+        return None
+    for u in obs.get("units") or []:
+        if u.get("seen") is False:
+            continue
+        owner = str(u.get("owner") or "")
+        if owner and owner not in {"own", "unknown"}:
+            continue
+        if str(u.get("on_city_id") or "") == cid:
+            return u
+        if str(u.get("near_city_id") or "") == cid:
+            try:
+                if float(u.get("near_city_hex") or 9) <= combat.CAPTURE_STANDING_HEX:
+                    return u
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def _stood_on_city(
     obs: dict[str, Any],
     dest: dict[str, Any] | None,
     frame: tuple[int, int],
     allow_panel: bool = False,
+    max_hex: float | None = None,
 ) -> dict[str, Any]:
-    """Pixel ON-tile. Panel Capture only counts after we clicked this city hex."""
+    """Pixel ON-tile. Panel Capture is game-truth for standing ON the city."""
+    tight = 0.55 if max_hex is None else max_hex
     on = combat.unit_on_city(
         obs.get("units") or [],
         dest,
         frame,
         obs.get("unit") or {},
-        max_hex=0.55,
+        max_hex=tight,
         want_owner="own",
     )
     if on.get("ok"):
@@ -339,25 +362,38 @@ def _stood_on_city(
             dest,
             frame,
             obs.get("unit") or {},
-            max_hex=combat.STANDING_HEX,
+            max_hex=combat.STANDING_HEX if max_hex is None else max_hex,
             want_owner="own",
         )
         if wide.get("ok"):
             return wide
     if not _panel_capture(obs):
         return on
-    # Capture panel + a unit still on THIS hex (sprite offset), not adjacent.
+    # Capture button only appears ON the city. HP bars sit on the nameplate
+    # (~1.0 from walk) so STANDING_HEX missed live Disrof; sticky coords can
+    # still be the east port (~1.0) after the sprite stepped onto the hex.
     relaxed = combat.unit_on_city(
         obs.get("units") or [],
         dest,
         frame,
         obs.get("unit") or {},
-        max_hex=combat.STANDING_HEX,
+        max_hex=combat.CAPTURE_STANDING_HEX,
         want_owner="own",
     )
     if relaxed.get("ok"):
         relaxed["reason"] = "panel_capture"
         return relaxed
+    tagged = _unit_tagged_on_city(obs, dest)
+    if tagged is not None:
+        center = combat.city_walk_center(dest, frame) or combat.city_tile_center(dest, frame)
+        return {
+            "ok": True,
+            "reason": "panel_capture",
+            "unit": tagged,
+            "hex_pitch": combat.hex_pitch(*frame),
+            "tile_xy": [center[0], center[1]] if center else None,
+            "hex_dist": tagged.get("near_city_hex"),
+        }
     if not allow_panel:
         return on
     # After a city-hex click, Capture is ground truth even if the HP bar
@@ -778,7 +814,18 @@ def capture_target(obs: dict[str, Any]) -> tuple[int, int] | None:
     if panel:
         best = max(panel, key=lambda b: int(b.get("n") or 0))
         return int(best["x"]), int(best["y"])
-    return None
+    # OCR said Capture but the blue pill wasn't clustered — still click the panel.
+    for b in overlay.get("do_it_blobs") or []:
+        try:
+            if _in_unit_panel(int(b["x"]), int(b["y"]), frame):
+                return int(b["x"]), int(b["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    try:
+        x0, y0, x1, y1 = coords.crop_box("UNIT_CROP")
+    except Exception:
+        return None
+    return int(x0 + (x1 - x0) * 0.30), int(y0 + (y1 - y0) * 0.42)
 
 
 def _captured(before: dict[str, Any], after: dict[str, Any], city_id: str | None, dest: dict[str, Any] | None) -> bool:
