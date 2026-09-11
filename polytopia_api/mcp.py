@@ -53,7 +53,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_move_to",
-        "description": "Walk onto a city tile (city_id or x,y). If the city is garrisoned, returns city_occupied with next=/attack (do not walk). Else clicks the building foot. stood_on_city true only when the unit is ON the hex.",
+        "description": "Walk onto a city tile (city_id or x,y). If garrisoned, returns city_occupied with next=/attack. Else adjacent (~1 hex) clicks the city-foot / blue ring even when clustered move_marks are empty. Sticky city_id stays resolvable all turn. stood_on_city true only when the unit is ON the hex.",
         "inputSchema": {
             "type": "object",
             "properties": {

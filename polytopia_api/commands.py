@@ -10,7 +10,7 @@ from . import coords
 from . import detect
 from . import driver
 from . import snapshot
-from .observe import all_cities, lookup, lookup_city, lookup_unit, observe, remember
+from .observe import all_cities, lookup, lookup_city, lookup_unit, observe, register_cities, remember
 
 ATTACK_BUDGET_S = 7.5
 SELECT_LIGHT_SLEEP_S = 0.18
@@ -47,6 +47,29 @@ def _shot_arr(obs: dict[str, Any] | None):
         return None
 
 
+def _merge_city(hit: dict[str, Any] | None, sticky: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Keep plate/tile/x from the turn index when a later frame is incomplete."""
+    if not sticky and not hit:
+        return None
+    if not sticky:
+        out = dict(hit or {})
+    elif not hit:
+        out = dict(sticky)
+    else:
+        out = dict(sticky)
+        out.update({k: v for k, v in hit.items() if v is not None})
+        for key in ("tile", "tile_xy", "plate_y", "x", "y", "kind"):
+            if out.get(key) is None and sticky.get(key) is not None:
+                out[key] = sticky[key]
+    cid = str((sticky or {}).get("id") or (hit or {}).get("id") or (hit or {}).get("city_id") or "")
+    if cid:
+        out["id"] = cid
+        out["city_id"] = cid
+    if out.get("kind") is None and (out.get("tile") is not None or out.get("plate_y") is not None or cid.startswith("c")):
+        out["kind"] = "city"
+    return out
+
+
 def _resolve(ident: str | None, space: str = "screen") -> dict[str, Any] | None:
     """Resolve city_id/unit id from the last observe, then the turn-sticky index.
 
@@ -57,6 +80,17 @@ def _resolve(ident: str | None, space: str = "screen") -> dict[str, Any] | None:
         return None
     ident = str(ident)
     mem = remember()
+    if ident.startswith("c"):
+        hit = lookup(mem, ident) if mem else None
+        sticky = lookup_city(ident)
+        merged = _merge_city(hit if hit and (hit.get("kind") == "city" or hit.get("plate_y") is not None or hit.get("tile") is not None or str(hit.get("id") or "").startswith("c")) else None, sticky)
+        if merged:
+            register_cities([merged])
+            return merged
+        fresh = lookup(observe(), ident)
+        if fresh:
+            register_cities([fresh])
+        return fresh
     if mem:
         hit = lookup(mem, ident)
         if hit:
@@ -131,7 +165,7 @@ def _relive_unit(sticky: dict[str, Any], ident: str | None) -> dict[str, Any] | 
         for u in obs.get("units") or []:
             if ident and str(u.get("id")) == str(ident) and u.get("seen") is not False:
                 return u
-    fresh = observe()
+    fresh = observe(mode="marks")
     if ident:
         live = lookup(fresh, ident)
         if live and live.get("seen") is not False and not _is_city_hit(live):
@@ -393,6 +427,48 @@ def _enemy_garrison(
     return None
 
 
+def _is_city_dest(dest: dict[str, Any] | None, city_id: str | None, to_id: str | None) -> bool:
+    if dest and (
+        dest.get("kind") == "city"
+        or dest.get("tile") is not None
+        or dest.get("plate_y") is not None
+    ):
+        return True
+    for ident in (city_id, to_id):
+        s = str(ident or "")
+        if s.startswith("c") and "_" in s[1:]:
+            return bool(dest)
+    return False
+
+
+def _adjacent_city_foot(
+    dest: dict[str, Any],
+    frame: tuple[int, int],
+    reach: dict[str, Any],
+) -> tuple[dict[str, Any] | None, float | None]:
+    """When clustered blues are empty but the unit is ~1 hex away, click the foot.
+
+    Live T39: u3→c14_24 tile_dist≈0.94 / move_range=1 returned no_move_marks
+    while the city hex was the destination.
+    """
+    walk = combat.city_walk_center(dest, frame)
+    if walk is None:
+        return None, None
+    dist = reach.get("tile_dist")
+    rng = float(reach.get("move_range") or 1)
+    if dist is None or float(dist) > rng + 0.65:
+        return None, None
+    if float(dist) > 1.25:
+        return None, None
+    return {
+        "x": int(walk[0]),
+        "y": int(walk[1]),
+        "n": 0,
+        "ok": True,
+        "kind": "city_foot",
+    }, 0.0
+
+
 def _unit_xy(obs: dict[str, Any] | None, ident: str | None) -> tuple[int, int] | None:
     if not ident:
         return None
@@ -609,7 +685,7 @@ def select_unit(
     if clicked is None:
         return _fail("select_unit", "need x,y or id/city_id")
     panel = after.get("unit") or {}
-    missed = bool(panel.get("settings")) and not (after.get("move_marks") or after.get("attack_marks"))
+    missed = bool(panel.get("settings")) and not after.get("move_marks")
     out = {
         "ok": not missed,
         "name": "select_unit",
@@ -687,18 +763,15 @@ def _move_to(
     frame = _frame(after_select)
     marks = list(after_select.get("move_marks") or [])
     panel = after_select.get("unit") or {}
+    if dest is None:
+        dest = _resolve(city_id or to_id, space)
     if dest is None and x is not None and y is not None:
         dest = _city_near_xy(int(x), int(y), after_select)
         if dest and not city_id:
             city_id = str(dest.get("id") or dest.get("city_id") or "") or None
-    is_city = bool(
-        dest
-        and (
-            dest.get("kind") == "city"
-            or dest.get("tile") is not None
-            or dest.get("plate_y") is not None
-        )
-    )
+    if dest:
+        register_cities([dest])
+    is_city = _is_city_dest(dest, city_id, to_id)
     if is_city:
         tile_xy = combat.city_tile_center(dest, frame)
         if tile_xy is None:
@@ -707,7 +780,7 @@ def _move_to(
             except (KeyError, TypeError, ValueError):
                 return _fail(
                     "move_to",
-                    "need x,y or city_id/to_id",
+                    f"no entity {city_id or to_id}" if (city_id or to_id) else "need x,y or city_id/to_id",
                     city_id=city_id,
                     stood_on_city=False,
                 )
@@ -749,10 +822,27 @@ def _move_to(
         # walk NEXT TO Disrof while still returning ok:true.
         if panel.get("settings"):
             marks = []
-        # Settings/dock OCR means select missed — leftover city pixels are not a walk.
-        use_pixels = (not panel.get("settings")) and (
-            _panel_has_unit(panel) or bool(marks)
-        )
+        if (not marks or panel.get("settings")) and from_id:
+            # Light select (0.18s) often screenshots before the city-hex ring.
+            _sleep(0.28)
+            after_select = remember() or observe(mode="marks")
+            if panel.get("settings") or not after_select.get("move_marks"):
+                sticky = (selected or {}).get("hit") or _resolve(from_id)
+                live = _relive_unit(sticky, from_id) if sticky else None
+                if live:
+                    selected = select_unit(
+                        id=str(live.get("id") or from_id), space=space, light=True,
+                    )
+                    after_select = remember() or after_select
+            dest = _resolve(city_id or to_id, space) or dest
+            if dest:
+                register_cities([dest])
+            frame = _frame(after_select)
+            marks = list(after_select.get("move_marks") or [])
+            panel = after_select.get("unit") or {}
+            if panel.get("settings"):
+                marks = []
+        use_pixels = not panel.get("settings")
         arr = _shot_arr(after_select) if use_pixels else None
         garrison = _enemy_garrison(after_select, dest, frame)
         step, _ = combat.nearest_mark_toward(
@@ -793,6 +883,10 @@ def _move_to(
             )
         mark, hex_d = _find_walk_mark(marks, dest, frame, arr)
         aim = combat.city_move_aim(mark, dest, frame)
+        if mark is None and (not marks) and reach.get("ok"):
+            mark, hex_d = _adjacent_city_foot(dest, frame, reach)
+            if mark is not None:
+                aim = combat.city_move_aim(mark, dest, frame) or (int(mark["x"]), int(mark["y"]))
         if mark is None:
             path_reason = "no_mark_on_city_tile"
             hint = "no blue mark on the city tile — unit cannot stand ON this turn"
@@ -831,6 +925,8 @@ def _move_to(
             mark = {**mark, "x": int(aim[0]), "y": int(aim[1]), "aimed": "city_foot"}
         _sleep(0.55)
         after = observe(mode="marks")
+        if dest:
+            register_cities([dest])
         on = _stood_on_city(after, dest, frame, allow_panel=True)
         # Building / plate clicks select the city (TRAIN) and never walk.
         # Re-select the unit and click the blue ring (often at the building foot).
@@ -898,7 +994,9 @@ def _move_to(
         x, y = int(dest["x"]), int(dest["y"])
         space = "screen"
     if x is None or y is None:
-        return _fail("move_to", "need x,y or city_id/to_id", city_id=city_id, stood_on_city=False)
+        ident = city_id or to_id
+        reason = f"no entity {ident}" if ident else "need x,y or city_id/to_id"
+        return _fail("move_to", reason, city_id=city_id, stood_on_city=False)
     clicked = _click(x, y, space=space)
     _sleep()
     after = observe(mode="marks")

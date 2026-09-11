@@ -801,7 +801,10 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         conf = 0.72 if own else 0.62
         if tribe == "imperius":
-            conf = 0.55
+            # Live T39: a water/sky fragment tagged imperius next to Disrof.
+            if not frost_plate and not name:
+                continue
+            conf = 0.62
         if tribe == "vengir":
             conf = 0.70 if name else 0.64
             if strong_vengir:
