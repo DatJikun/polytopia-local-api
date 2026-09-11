@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 
 from polytopia_api import coords
 from polytopia_api.commands import _city_click_points, capture_target, recruit_target
-from polytopia_api.detect import as_rgb, find_move_marks, find_train_buttons, is_move_rgb, is_water_rgb
+from polytopia_api.detect import as_rgb, find_move_marks, find_train_buttons, is_move_rgb, is_snow_rgb, is_water_rgb
 from polytopia_api.driver import _hud_star_x, parse_hud, parse_unit_panel
 from polytopia_api.entities import classify_tribe, find_cities, find_units, find_villages
 from polytopia_api.mcp import TOOLS, handle
@@ -56,6 +56,11 @@ def test_water_vs_move():
     assert is_move_rgb(146, 204, 255)
     assert not is_move_rgb(111, 207, 247)
     assert not is_move_rgb(58, 199, 249)
+    # Mountain snow / ice sparkle must not count as ocean (live mountain unit drop).
+    assert is_snow_rgb(240, 245, 250)
+    assert is_snow_rgb(255, 255, 255)
+    assert not is_water_rgb(240, 245, 250)
+    assert not is_water_rgb(220, 230, 235)
 
 
 def test_find_move_marks_ignores_water():
@@ -1120,7 +1125,7 @@ def test_win_path_move_capture_attack():
     ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
         r = commands.move_to(from_id="u1", city_id="c5_3")
     assert r["ok"] is True and r["stood_on_city"] is True
-    assert clicks == [(202, 81)], clicks
+    assert clicks == [(200, 94)], clicks
 
     clicks.clear()
     no_mark_state = {
@@ -1866,6 +1871,11 @@ def test_city_tile_center_lifts_plate_xy():
     assert w is not None
     assert 90 <= w[1] <= 100
     assert w[1] > c[1]
+    roof_only = city_walk_center({"x": 200, "y": 80, "tile_xy": [200, 80]}, (1280, 800))
+    assert roof_only is not None and roof_only[1] > 80
+    from polytopia_api.combat import city_move_aim
+    foot = city_move_aim({"x": 200, "y": 81}, {"x": 200, "y": 80, "plate_y": 110, "tile_xy": [200, 80]}, (1280, 800))
+    assert foot is not None and foot[1] > 81
 
 
 def test_move_on_hex_finds_foot_ring():
@@ -1910,7 +1920,8 @@ def test_observe_detects_unit_on_mountain_south_of_disrof():
     from polytopia_api.detect import as_rgb
     from polytopia_api.entities import observe_map
 
-    assert is_water_rgb(230, 230, 235)
+    assert is_snow_rgb(230, 230, 235)
+    assert not is_water_rgb(230, 230, 235)
     coords.reset()
     coords.set_frame(1280, 800)
     im = Image.new("RGB", (1280, 800), (30, 40, 28))
@@ -2086,6 +2097,119 @@ def test_dock_zone_blocks_end_turn_pixels():
     assert zone["x0"] > 500 and zone["y0"] > 650
 
 
+def test_find_units_keeps_mountain_south_of_city():
+    """Live: first /observe dropped the Bardur on the mountain south of Disrof (top-16 + snow)."""
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    for i in range(40):
+        x = 80 + (i % 5) * 90
+        y = 430 + (i // 5) * 28
+        d.rectangle((x, y, x + 36, y + 6), fill=(90, 210, 50))
+    d.rectangle((580, 248, 640, 320), fill=(240, 245, 250))
+    d.rectangle((600, 258, 616, 263), fill=(90, 210, 50))
+    d.rectangle((598, 272, 618, 298), fill=(90, 85, 80))
+    arr = as_rgb(im)
+    cities = [{"x": 600, "y": 144, "tile_xy": [600, 144], "plate_y": 170, "tribe": "vengir", "owner": "enemy"}]
+    units = find_units(arr, cities=cities)
+    near = [u for u in units if abs(int(u["x"]) - 608) < 45 and 250 <= int(u["y"]) <= 320]
+    assert near, [(u["id"], u["x"], u["y"], u.get("n")) for u in units]
+    assert any(str(u.get("owner") or "") in {"own", "unknown"} for u in near), near
+
+
+def test_select_unit_prefers_live_over_ghost_sticky():
+    """Live: u25 seen:false sticky clicked Settings; the warrior was at (607,277)."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_units, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    register_units([
+        {"id": "u25", "kind": "unit", "x": 100, "y": 100, "owner": "own", "seen": False, "sticky": True},
+    ])
+    live = {"id": "u25", "kind": "unit", "x": 607, "y": 277, "owner": "own", "seen": True}
+    state = {
+        "layout": {"frame": [1280, 800]},
+        "units": [live],
+        "unit": {"can_move": True, "unit": "warrior", "settings": False, "no_actions": False},
+        "move_marks": [{"x": 599, "y": 160, "n": 20}],
+        "attack_marks": [],
+        "hud": {},
+        "ready": {},
+        "overlay": {},
+        "turn_diff": None,
+    }
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands, "remember", return_value=state), patch.object(
+        commands, "observe", return_value=state
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.select_unit(id="u25", light=True)
+    assert r["ok"] is True, r
+    assert clicks and clicks[0] == (607, 277), clicks
+    assert (100, 100) not in clicks
+    reset_obs()
+
+
+def test_move_to_clicks_foot_not_roof_centroid():
+    """Live: move_hex centroid at tile_xy [599,142] selected the building; unit stayed on the mountain."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = _disrof_city()
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    roof = {"id": "m_roof", "x": 200, "y": 81, "n": 40, "kind": "move_hex"}
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "cities_own": [],
+        "move_marks": [roof],
+        "units": [{"id": "u1", "x": 164, "y": 80, "owner": "own", "seen": True}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "rider", "settings": False},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **before,
+        "move_marks": [],
+        "units": [{"id": "u1", "x": 201, "y": 94, "owner": "own", "seen": True}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "rider"},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": before["unit"]}
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u1", city_id="c5_3")
+    assert clicks, clicks
+    assert clicks[0][1] > 81, clicks
+    assert (200, 80) not in clicks and (200, 81) not in clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    reset_obs()
+
+
 if __name__ == "__main__":
     test_parse_hud()
     test_parse_unit()
@@ -2137,4 +2261,7 @@ if __name__ == "__main__":
     test_move_to_from_mountain_unit_stands_on_city()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
+    test_find_units_keeps_mountain_south_of_city()
+    test_select_unit_prefers_live_over_ghost_sticky()
+    test_move_to_clicks_foot_not_roof_centroid()
     print("ok")

@@ -396,7 +396,9 @@ def observe(shot: Any | None = None, mode: str = "full") -> dict[str, Any]:
     arr = detect.as_rgb(im)
     if light:
         mapped_cities = list(prev.get("cities") or [])
-        mapped_units = entities.attach_units_near_cities(arr, entities.find_units(arr), mapped_cities)
+        mapped_units = entities.attach_units_near_cities(
+            arr, entities.find_units(arr), mapped_cities
+        )
         villages = list(prev.get("villages") or [])
         fog = list(prev.get("fog_edge") or [])
         own_tribe = prev.get("own_tribe") or entities._own_tribe()

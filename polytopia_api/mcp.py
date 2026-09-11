@@ -53,7 +53,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_move_to",
-        "description": "Walk onto a city tile (city_id or x,y). Clicks the blue mark on the hex ground (building foot), not an adjacent hex. stood_on_city true only when the unit is ON the hex. Prefer city_id over computerUse.",
+        "description": "Walk onto a city tile (city_id or x,y). Clicks the building foot even when the blue cluster sits on the roof. Resolves sticky unseen units to a live HP bar. stood_on_city true only when the unit is ON the hex.",
         "inputSchema": {
             "type": "object",
             "properties": {
