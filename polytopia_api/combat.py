@@ -110,6 +110,8 @@ def city_walk_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tup
     Live Disrof: the blue move ring sits at the building *foot* (~plate_y − 0.45
     pitch). ``city_tile_center`` is ~0.75 pitch up (roof); that made the on-tile
     mark look ~1.0 hex away (same as adjacent) so /move-to never clicked it.
+    When ``plate_y`` is missing, infer the foot *below* tile_xy (roof), never
+    return the roof itself — clicking that selects the city.
     """
     if not city:
         return None
@@ -121,7 +123,37 @@ def city_walk_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tup
     if city.get("plate_y") is not None:
         plate = int(city["plate_y"])
         return cx, max(0, plate - int(round(0.45 * pitch)))
-    return city_tile_center(city, frame)
+    center = city_tile_center(city, frame)
+    if center:
+        return center[0], center[1] + int(round(0.30 * pitch))
+    return None
+
+
+def city_move_aim(
+    mark: dict[str, Any] | None,
+    city: dict[str, Any] | None,
+    frame: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Pixel that walks ON the city. Roof / building centroids select the city."""
+    walk = city_walk_center(city, frame)
+    roof = city_tile_center(city, frame)
+    if mark is None:
+        return walk
+    try:
+        mx, my = int(mark["x"]), int(mark["y"])
+    except (KeyError, TypeError, ValueError):
+        return walk
+    if not walk:
+        return mx, my
+    pitch = hex_pitch(*frame)
+    if roof and my < walk[1] - max(3, int(round(0.12 * pitch))):
+        return walk
+    if roof:
+        d_walk = tile_dist(mx, my, walk[0], walk[1], pitch)
+        d_roof = tile_dist(mx, my, roof[0], roof[1], pitch)
+        if d_roof + 0.08 < d_walk:
+            return walk
+    return mx, my
 
 
 def city_stand_points(city: dict[str, Any] | None, frame: tuple[int, int]) -> list[tuple[int, int]]:

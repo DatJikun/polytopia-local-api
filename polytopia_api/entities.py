@@ -227,11 +227,12 @@ def _hp_of_bar(arr: np.ndarray, cx: int, cy: int) -> str:
     return "full"
 
 
-def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
+def find_units(arr: np.ndarray, cities: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Lime HP bars (not yellow city tents). Click the body just below the bar.
 
     Units on snowy mountains used to vanish: the pixel under the bar is ice,
     ``is_water_rgb`` skipped them, and /observe only listed southern warriors.
+    Keep city-adjacent bars even when many larger HP bars exist elsewhere.
     """
     y0, y1, x0, x1 = _map_bounds(arr)
     region = arr[y0:y1, x0:x1]
@@ -242,7 +243,8 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
     clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(16, rad * 2))
     h, w = arr.shape[:2]
     frame = (w, h)
-    max_n = max(40, int(round(220 * (h * w) / (coords.BASE_W * coords.BASE_H))))
+    # 1280×800 area-scale used to set max_n≈98 and drop a 16×5 mountain HP bar.
+    max_n = max(160, int(round(360 * (h * w) / (coords.BASE_W * coords.BASE_H))))
     out: list[dict[str, Any]] = []
     for n, cx, cy in clusters:
         if n > max_n:
@@ -255,7 +257,10 @@ def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
     out.sort(key=lambda u: (int(u.get("y") or 0), int(u.get("x") or 0)))
     for i, rec in enumerate(out):
         rec["id"] = f"u{i}"
-    return out[:24]
+    out = out[:36]
+    if cities:
+        return attach_units_near_cities(arr, out, cities)
+    return out
 
 
 def _lime_in_patch(arr: np.ndarray, x: int, y: int, radius: int) -> tuple[int, int, int]:
@@ -428,7 +433,7 @@ def attach_units_near_cities(
     )
     for i, rec in enumerate(out):
         rec["id"] = f"u{i}"
-    return out[:24]
+    return out[:36]
 
 
 def _clean_city_name(text: str) -> str:

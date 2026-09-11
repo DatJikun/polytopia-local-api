@@ -75,6 +75,88 @@ def _entity_click_xy(hit: dict[str, Any]) -> tuple[int, int]:
     return x, int(hit["y"])
 
 
+def _is_city_hit(hit: dict[str, Any] | None) -> bool:
+    if not hit:
+        return False
+    if hit.get("kind") == "unit":
+        return False
+    return bool(hit.get("kind") == "city" or hit.get("plate_y") is not None)
+
+
+def _unit_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
+    """Mountain sprites sit well below the HP bar; one y often misses."""
+    x, y = int(hit["x"]), int(hit["y"])
+    pts = [(x, y, "body")]
+    for dy, name in ((12, "below"), (24, "foot"), (-8, "above")):
+        ny = max(0, y + dy)
+        if all(abs(ny - p[1]) >= 6 for p in pts):
+            pts.append((x, ny, name))
+    bar = hit.get("bar_y")
+    if bar is not None:
+        by = int(bar) + 10
+        if all(abs(by - p[1]) >= 6 for p in pts):
+            pts.append((x, by, "bar_below"))
+    return pts
+
+
+def _panel_has_unit(panel: dict[str, Any] | None) -> bool:
+    panel = panel or {}
+    if panel.get("settings"):
+        return False
+    if panel.get("can_move") or panel.get("no_actions") or panel.get("capture"):
+        return True
+    if panel.get("unit"):
+        return True
+    return False
+
+
+def _dismiss_settings(panel: dict[str, Any] | None) -> None:
+    panel = panel or {}
+    raw = str(panel.get("raw") or "").lower()
+    if panel.get("settings") or "settings" in raw:
+        try:
+            driver.back()
+            _sleep(0.22)
+        except Exception:
+            pass
+
+
+def _relive_unit(sticky: dict[str, Any], ident: str | None) -> dict[str, Any] | None:
+    """Sticky unseen units click empty terrain / Settings. Prefer a live HP bar."""
+    obs = remember()
+    if obs:
+        live = lookup(obs, ident) if ident else None
+        if live and live.get("seen") is not False and not _is_city_hit(live):
+            return live
+        for u in obs.get("units") or []:
+            if ident and str(u.get("id")) == str(ident) and u.get("seen") is not False:
+                return u
+    fresh = observe()
+    if ident:
+        live = lookup(fresh, ident)
+        if live and live.get("seen") is not False and not _is_city_hit(live):
+            return live
+    try:
+        sx, sy = int(sticky["x"]), int(sticky["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    best = None
+    best_d = 110.0
+    for u in fresh.get("units") or []:
+        if u.get("seen") is False or _is_city_hit(u):
+            continue
+        if str(u.get("owner") or "") == "enemy":
+            continue
+        try:
+            d = ((int(u["x"]) - sx) ** 2 + (int(u["y"]) - sy) ** 2) ** 0.5
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d <= best_d:
+            best_d = d
+            best = u
+    return best
+
+
 def _city_click_points(hit: dict[str, Any]) -> list[tuple[int, int, str]]:
     x = int(hit["x"])
     plate = int(hit.get("plate_y") or hit["y"])
@@ -183,11 +265,20 @@ def _find_walk_mark(
     for px, py in points:
         hit = detect.move_on_hex(arr, px, py, pitch, min_n=5)
         if hit.get("ok"):
-            return hit, 0.0
+            # Centroid of leftover roof-blue sits on the building. Click the
+            # hex we searched (foot), not that centroid.
+            return {
+                "n": hit.get("n"),
+                "ok": True,
+                "x": px,
+                "y": py,
+                "kind": "move_hex",
+                "centroid": [hit["x"], hit["y"]],
+            }, 0.0
     for px, py in points:
         tint = detect.move_tint_at(arr, px, py, radius=max(14, pitch // 2), min_n=5)
         if tint.get("ok"):
-            return tint, 0.0
+            return {"n": tint.get("n"), "ok": True, "x": px, "y": py, "kind": "move_tint"}, 0.0
     return None, None
 
 
@@ -214,6 +305,8 @@ def _city_click_misfire(
     if _panel_capture(after):
         return False
     panel = after.get("unit") or {}
+    if panel.get("settings"):
+        return True
     if panel.get("train") and not panel.get("capture"):
         return True
     xy0 = _unit_xy(before, from_id)
@@ -336,34 +429,47 @@ def select_unit(
         hit = _prefer_live_hit(_resolve(ident, space))
         if not hit:
             return _fail("select_unit", f"no entity {ident}")
+        if not _is_city_hit(hit) and hit.get("seen") is False:
+            live = _relive_unit(hit, ident)
+            if live:
+                hit = live
         x, y = _entity_click_xy(hit)
         space = "screen"
     if x is None or y is None:
         return _fail("select_unit", "need x,y or id/city_id")
-    clicked = _click(x, y, space=space)
-    _sleep(SELECT_LIGHT_SLEEP_S if light else 0.4)
-    after = observe(mode="marks" if light else "full")
+    points: list[tuple[int, int, str]]
+    if hit and not _is_city_hit(hit):
+        points = _unit_click_points(hit)
+    else:
+        points = [(int(x), int(y), "given")]
+    clicked = None
+    after: dict[str, Any] = {}
+    where = "given"
+    for i, (cx, cy, where) in enumerate(points):
+        clicked = _click(cx, cy, space=space)
+        _sleep(SELECT_LIGHT_SLEEP_S if light else 0.4)
+        after = observe(mode="marks" if light else "full")
+        panel = after.get("unit") or {}
+        if _panel_has_unit(panel) or after.get("move_marks") or after.get("attack_marks"):
+            break
+        ghost = bool(hit and hit.get("seen") is False)
+        if panel.get("settings"):
+            _dismiss_settings(panel)
+            continue
+        if i == 0 and not ghost:
+            break
+        _dismiss_settings(panel)
+    if clicked is None:
+        return _fail("select_unit", "need x,y or id/city_id")
     panel = after.get("unit") or {}
-    # Settings/dock OCR means the click missed the warrior (ghost sticky / HP bar).
-    if (
-        hit
-        and hit.get("kind") == "unit"
-        and (panel.get("settings") or not (panel.get("can_move") or panel.get("unit")))
-        and not panel.get("capture")
-        and not panel.get("train")
-    ):
-        body_y = int(hit.get("y") or y) + 10
-        if abs(body_y - int(y)) >= 4:
-            clicked = _click(int(hit.get("x") or x), body_y, space="screen")
-            _sleep(SELECT_LIGHT_SLEEP_S if light else 0.35)
-            after = observe(mode="marks" if light else "full")
-            panel = after.get("unit") or {}
-    return {
-        "ok": True,
+    missed = bool(panel.get("settings")) and not (after.get("move_marks") or after.get("attack_marks"))
+    out = {
+        "ok": not missed,
         "name": "select_unit",
         "id": ident,
         "city_id": city_id or (ident if ident and str(ident).startswith("c") else None),
         "hit": hit,
+        "where": where,
         "x": clicked["x"],
         "y": clicked["y"],
         "unit": panel,
@@ -373,6 +479,10 @@ def select_unit(
         "hud": after.get("hud"),
         "observe_mode": after.get("observe_mode"),
     }
+    if missed:
+        out["reason"] = "select_missed"
+        out["hint"] = "click hit Settings/dock — unit id may be a sticky ghost"
+    return out
 
 
 def move_to(
@@ -416,6 +526,14 @@ def _move_to(
     selected = None
     if from_id or from_x is not None:
         selected = select_unit(x=from_x, y=from_y, id=from_id, space=space, light=True)
+        panel0 = (selected or {}).get("unit") or {}
+        if (not selected.get("ok") or panel0.get("settings")) and from_id:
+            sticky = (selected or {}).get("hit") or _resolve(from_id)
+            live = _relive_unit(sticky, from_id) if sticky else None
+            if live:
+                selected = select_unit(
+                    id=str(live.get("id") or from_id), space=space, light=True,
+                )
         if not selected.get("ok"):
             return _fail(
                 "move_to",
@@ -489,8 +607,15 @@ def _move_to(
         )
         # Adjacent blue hexes (~1.0) used to win nearest_mark_hex(1.15) and
         # walk NEXT TO Disrof while still returning ok:true.
-        arr = _shot_arr(after_select)
+        if panel.get("settings"):
+            marks = []
+        # Settings/dock OCR means select missed — leftover city pixels are not a walk.
+        use_pixels = (not panel.get("settings")) and (
+            _panel_has_unit(panel) or bool(marks)
+        )
+        arr = _shot_arr(after_select) if use_pixels else None
         mark, hex_d = _find_walk_mark(marks, dest, frame, arr)
+        aim = combat.city_move_aim(mark, dest, frame)
         garrison = combat.garrison_unit(after_select.get("units") or [], dest, frame, max_hex=0.9)
         enemy_on = bool(garrison and str(garrison.get("owner") or "") == "enemy")
         atk_marks = list(after_select.get("attack_marks") or [])
@@ -539,7 +664,12 @@ def _move_to(
                 can_reach=reach,
                 stood_on_city=False,
             )
-        clicked = _click(int(mark["x"]), int(mark["y"]), space="screen")
+        if aim is None:
+            aim = (int(mark["x"]), int(mark["y"]))
+        clicked = _click(int(aim[0]), int(aim[1]), space="screen")
+        # Keep the mark payload but the click is the foot when the cluster sat on the roof.
+        if aim and (int(mark["x"]), int(mark["y"])) != (int(aim[0]), int(aim[1])):
+            mark = {**mark, "x": int(aim[0]), "y": int(aim[1]), "aimed": "city_foot"}
         _sleep(0.55)
         after = observe(mode="marks")
         on = _stood_on_city(after, dest, frame, allow_panel=True)
@@ -558,21 +688,21 @@ def _move_to(
             retry_arr = _shot_arr(retry_obs)
             mark2, hex_d2 = _find_walk_mark(retry_marks, dest, retry_frame, retry_arr)
             aims: list[tuple[int, int]] = []
-            if mark2 is not None:
-                aims.append((int(mark2["x"]), int(mark2["y"])))
             walk = combat.city_walk_center(dest, retry_frame)
-            if walk and walk not in aims:
+            if walk:
                 aims.append(walk)
+            if mark2 is not None:
+                aimed = combat.city_move_aim(mark2, dest, retry_frame)
+                if aimed and aimed not in aims:
+                    aims.append(aimed)
             orig = (int(mark["x"]), int(mark["y"]))
             if orig not in aims:
                 aims.append(orig)
             first_xy = (int(clicked["x"]), int(clicked["y"]))
-            clicked_retry = False
             for ax, ay in aims:
-                if clicked_retry and (ax, ay) == first_xy:
+                if (ax, ay) == first_xy:
                     continue
                 clicked = _click(ax, ay, space="screen")
-                clicked_retry = True
                 _sleep(0.5)
                 after = observe(mode="marks")
                 on = _stood_on_city(after, dest, retry_frame, allow_panel=True)

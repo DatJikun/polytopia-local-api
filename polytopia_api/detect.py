@@ -128,9 +128,22 @@ def _mask_in(
     return ys + ay0, xs + ax0
 
 
+def is_snow_rgb(r: int, g: int, b: int) -> bool:
+    """Mountain snow / ice sparkle. High R — not cyan ocean."""
+    if min(int(r), int(g), int(b)) < 150:
+        return False
+    return max(int(r), int(g), int(b)) - min(int(r), int(g), int(b)) <= 55
+
+
 def is_water_rgb(r: int, g: int, b: int) -> bool:
-    """Cyan water / ice. Move highlights fail this (G stays ≤220 and B-G is larger)."""
+    """Cyan water / ice. Move highlights fail this (G stays ≤220 and B-G is larger).
+
+    Near-white mountain snow used to match ``g>=225 and b>=225`` and drop the
+    Bardur standing on the peak south of Disrof.
+    """
     if b < 180 or g < 170:
+        return False
+    if is_snow_rgb(r, g, b):
         return False
     if g >= 225 and b >= 225:
         return True
