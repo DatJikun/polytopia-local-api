@@ -62,8 +62,16 @@ ROUTES = {
 }
 
 
+def _json_default(obj: object) -> object:
+    if hasattr(obj, "item"):
+        return obj.item()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 def _json(handler: BaseHTTPRequestHandler, code: int, payload: dict) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if isinstance(payload, dict) and payload.get("ok") is None and "error" in payload:
+        payload = {**payload, "ok": False}
+    body = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))

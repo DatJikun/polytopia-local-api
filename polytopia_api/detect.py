@@ -227,6 +227,39 @@ def find_train_buttons(arr: np.ndarray) -> list[dict[str, Any]]:
     return _color_buttons(arr, TRAIN_LO, TRAIN_HI, "train", 0.38, 0.82, 0.28, 0.92, 28, 70)
 
 
+def _patch_count(
+    arr: np.ndarray,
+    x: int,
+    y: int,
+    radius: int,
+    pred,
+) -> int:
+    h, w = arr.shape[:2]
+    x0, x1 = max(0, int(x) - radius), min(w, int(x) + radius + 1)
+    y0, y1 = max(0, int(y) - radius), min(h, int(y) + radius + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 8:
+        return 0
+    n = 0
+    for row in crop:
+        for pix in row:
+            if pred(int(pix[0]), int(pix[1]), int(pix[2])):
+                n += 1
+    return n
+
+
+def move_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14) -> dict[str, Any]:
+    """City buildings hide clustered blue hexes; count move-blue under the tile."""
+    n = _patch_count(arr, x, y, radius, is_move_rgb)
+    return {"n": n, "ok": n >= 8, "x": int(x), "y": int(y), "kind": "move_tint"}
+
+
+def attack_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14) -> dict[str, Any]:
+    """Garrison sprites hide clustered red hexes; count attack-red under the tile."""
+    n = _patch_count(arr, x, y, radius, is_attack_rgb)
+    return {"n": n, "ok": n >= 8, "x": int(x), "y": int(y), "kind": "attack_tint"}
+
+
 def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:
     y0, y1, x0, x1 = _map_bounds(arr)
     region = arr[y0:y1, x0:x1]
@@ -241,8 +274,8 @@ def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:
         & ~((r < 100) & (g >= 190))
     )
     ys, xs = np.where(m)
-    rad, mn = _cluster_params(arr, 24, 10)
-    clusters = _cluster(ys + y0, xs + x0, radius=rad, min_size=mn)
+    rad, mn = _cluster_params(arr, 24, 6)
+    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(18, rad))
     marks = []
     for n, cx, cy in clusters:
         pr, pg, pb = (int(x) for x in arr[cy, cx])
