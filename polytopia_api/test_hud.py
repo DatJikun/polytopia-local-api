@@ -1918,8 +1918,8 @@ def test_recruit_uses_marks_observe_for_train():
     reset_obs()
 
 
-def test_recruit_clicks_city_foot_when_plate_misses_train():
-    """Roof/tile opens TRAIN (nameplate often misses; foot selects Disband)."""
+def test_recruit_clicks_nameplate_not_foot():
+    """Nameplate/roof open TRAIN. Foot/tile-first selected Disband on live 99876c5."""
     from unittest.mock import patch
 
     from polytopia_api import commands
@@ -1945,7 +1945,6 @@ def test_recruit_clicks_city_foot_when_plate_misses_train():
 
     def fake_observe(*args, **kwargs):
         n_obs["n"] += 1
-        # Roof/tile is first so TRAIN can appear on that click (budget <8s).
         opened = n_obs["n"] >= 1
         return {
             "layout": {"frame": [1280, 800]},
@@ -1967,9 +1966,9 @@ def test_recruit_clicks_city_foot_when_plate_misses_train():
     assert r["ok"] is True, r
     assert (184, 740) in clicks
     wheres = [t.get("where") for t in (r.get("tried") or [])]
-    assert wheres and wheres[0] in {"tile", "roof"}, r
+    assert wheres and wheres[0] in {"plate", "plate_above", "plate_left", "roof"}, r
+    assert "city_foot" not in wheres
     assert "plate_below" not in wheres
-    assert any(w in {"tile", "roof", "building"} for w in wheres), r
     reset_obs()
 
 
@@ -2090,6 +2089,117 @@ def test_recruit_clicks_brand_blue_panel_pill():
     assert r["ok"] is True, r
     assert (190, 742) in clicks
     assert all(not coords.in_dock_zone(x, y) for x, y in clicks), clicks
+    reset_obs()
+
+
+def test_recruit_clicks_train_despite_leftover_unit_ocr():
+    """Live: city panel OCR reads a nearby warrior — must not BACK; click brand-blue TRAIN."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c5_12",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [5, 12],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+    backs = {"n": 0}
+    panel = {
+        "layout": {"frame": [1280, 800]},
+        "overlay": {
+            "train_blobs": [],
+            "capture_blobs": [{"x": 188, "y": 744, "n": 150}],
+            "do_it_blobs": [],
+        },
+        "unit": {"train": False, "disband": False, "unit": "warrior", "raw": "Warrior"},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    def fake_back():
+        backs["n"] += 1
+        return {"ok": True}
+
+    with patch.object(commands, "remember", return_value=None), patch.object(
+        commands, "observe", return_value=panel
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ), patch.object(commands.driver, "back", side_effect=fake_back):
+        r = commands.recruit(city_id="c5_12")
+    assert r["ok"] is True, r
+    assert (188, 744) in clicks
+    assert backs["n"] == 0, r
+    assert "unit" not in (r.get("dismissed") or [])
+    tech = coords.point("TECH_TREE")
+    assert tech not in clicks
+    reset_obs()
+
+
+def test_recruit_waits_for_train_after_nameplate():
+    """Panel fade-in: first marks observe is empty, second has TRAIN — do not spray foot."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c4_11",
+        "kind": "city",
+        "x": 220,
+        "y": 90,
+        "plate_y": 120,
+        "tile": [4, 11],
+        "tribe": "bardur",
+        "owner": "own",
+    }
+    register_cities([city])
+    clicks: list[tuple[int, int]] = []
+    n_obs = {"n": 0}
+
+    def fake_observe(*args, **kwargs):
+        n_obs["n"] += 1
+        opened = n_obs["n"] >= 2
+        return {
+            "layout": {"frame": [1280, 800]},
+            "overlay": {"train_blobs": [{"x": 176, "y": 738, "n": 180}] if opened else []},
+            "unit": {"train": True, "raw": "Train"} if opened else {"train": False, "raw": ""},
+            "ready": {"train": True} if opened else {},
+            "hud": {},
+            "turn_diff": None,
+        }
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands, "remember", return_value=None), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        r = commands.recruit(city_id="c4_11")
+    assert r["ok"] is True, r
+    assert (176, 738) in clicks
+    wheres = [t.get("where") for t in (r.get("tried") or [])]
+    assert wheres[0] == "plate", r
+    assert "city_foot" not in wheres
     reset_obs()
 
 
@@ -4283,9 +4393,11 @@ if __name__ == "__main__":
     test_bardur_wood_shadow_stays_own()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
-    test_recruit_clicks_city_foot_when_plate_misses_train()
+    test_recruit_clicks_nameplate_not_foot()
     test_recruit_backs_off_disband_then_clicks_train()
     test_recruit_clicks_brand_blue_panel_pill()
+    test_recruit_clicks_train_despite_leftover_unit_ocr()
+    test_recruit_waits_for_train_after_nameplate()
     test_adjacent_bardur_cities_stay_two_own()
     test_unit_id_stays_resolvable_after_observe_drops_it()
     test_move_to_clicks_blue_ring_at_city_foot()
