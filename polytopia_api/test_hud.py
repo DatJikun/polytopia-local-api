@@ -1235,7 +1235,9 @@ def test_win_path_move_capture_attack():
     assert r["hp_after"]["hp"] == 7
     assert r.get("garrison_dead") is False
     assert r.get("next") == "attack"
-    assert clicks == [(203, 83)], clicks
+    assert clicks, clicks
+    assert clicks[0] == (200, 94), clicks
+    assert (203, 83) not in clicks
 
 
 def test_city_id_stays_resolvable_after_observe_drops_it():
@@ -2864,6 +2866,234 @@ def test_city_occupied_attack_then_stand_and_capture():
     reset_obs()
 
 
+def test_attack_on_hex_finds_foot_ring():
+    from polytopia_api.combat import hex_pitch
+    from polytopia_api.detect import as_rgb, attack_on_hex, attack_tint_at, find_attack_marks
+
+    im = Image.new("RGB", (1280, 800), (20, 20, 20))
+    px = im.load()
+    for y in range(90, 100):
+        for x in range(196, 206):
+            px[x, y] = (210, 60, 55)
+    arr = as_rgb(im)
+    hit = attack_on_hex(arr, 200, 94, hex_pitch(1280, 800))
+    assert hit["ok"] is True, hit
+    assert abs(hit["x"] - 200) < 10
+    assert 88 <= hit["y"] <= 102
+    tint = attack_tint_at(arr, 200, 94, radius=18, min_n=5)
+    assert tint["ok"] is True, tint
+    marks = find_attack_marks(arr)
+    assert marks, marks
+
+
+def test_attack_clicks_city_foot_not_hp_bar():
+    """Live: clustered red sat on the garrison HP bar; click missed, hp_dropped false."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c19_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [19, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    garrison = {"id": "u8", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "enemy"}
+    land = {"id": "u13", "x": 164, "y": 80, "owner": "own", "unit": "warrior"}
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [garrison, land],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+        "attack_marks": [{"x": 203, "y": 83, "n": 40}],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+    }
+    after = {
+        **before,
+        "units": [{**garrison, "hp": 5, "n": 20}, land],
+    }
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": before["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        r = commands.attack(from_id="u13", city_id="c19_24")
+    assert r["ok"] is True and r["hp_dropped"] is True, r
+    assert r.get("garrison_dead") is False
+    assert clicks, clicks
+    assert clicks[0] == (200, 94), clicks
+    assert clicks[0][1] > 83, clicks
+    reset_obs()
+
+
+def test_attack_waits_for_late_red_mark():
+    """Light select often screenshots before the Vengir hex turns red."""
+    import tempfile
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c19_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [19, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    garrison = {"id": "u8", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "enemy"}
+    land = {"id": "u13", "x": 164, "y": 80, "owner": "own", "unit": "warrior"}
+    empty = Image.new("RGB", (1280, 800), (20, 20, 20))
+    red = empty.copy()
+    rd = ImageDraw.Draw(red)
+    rd.rectangle((194, 88, 206, 100), fill=(210, 60, 55))
+    tmp = Path(tempfile.mkdtemp())
+    empty_path = str(tmp / "empty.png")
+    red_path = str(tmp / "red.png")
+    empty.save(empty_path)
+    red.save(red_path)
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    blank = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [garrison, land],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+        "attack_marks": [],
+        "screenshot": empty_path,
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+    }
+    lit = {**blank, "screenshot": red_path}
+    dropped = {
+        **lit,
+        "units": [{**garrison, "hp": 7, "n": 28}, land],
+    }
+    observes = {"n": 0}
+
+    def fake_observe(**kwargs):
+        observes["n"] += 1
+        return dropped if observes["n"] > 1 else lit
+
+    with patch.object(commands, "remember", return_value=blank), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": blank["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        r = commands.attack(from_id="u13", city_id="c19_24")
+    assert r["ok"] is True and r["hp_dropped"] is True, r
+    assert clicks, clicks
+    assert clicks[0] == (200, 94), clicks
+    assert observes["n"] >= 2
+    reset_obs()
+
+
+def test_attack_retries_when_hp_stays():
+    """First foot click can miss; re-select and click a nudged foot until HP drops."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c19_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [19, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    garrison = {"id": "u8", "kind": "unit", "x": 201, "y": 82, "hp": 10, "n": 40, "owner": "enemy"}
+    land = {"id": "u13", "x": 164, "y": 80, "owner": "own", "unit": "warrior"}
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    still = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "units": [garrison, land],
+        "unit": {"no_actions": False, "unit": "warrior", "can_move": False},
+        "attack_marks": [{"x": 200, "y": 94, "n": 30}],
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+    }
+    dropped = {
+        **still,
+        "units": [{**garrison, "hp": 4, "n": 16}, land],
+    }
+    observes = {"n": 0}
+
+    def fake_observe(**kwargs):
+        observes["n"] += 1
+        return dropped if observes["n"] > 3 else still
+
+    with patch.object(commands, "remember", return_value=still), patch.object(
+        commands, "observe", side_effect=fake_observe
+    ), patch.object(
+        commands, "select_unit",
+        return_value={"ok": True, "unit": still["unit"]},
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        r = commands.attack(from_id="u13", city_id="c19_24")
+    assert r["ok"] is True and r["hp_dropped"] is True, r
+    assert r.get("strike_retried") is True, r
+    assert len(clicks) >= 2, clicks
+    assert clicks[0] == (200, 94), clicks
+    reset_obs()
+
+
 def test_move_to_adjacent_empty_marks_clicks_city_foot():
     """Live T39: u3→c14_24 tile_dist≈0.94 / move_range=1 returned no_move_marks."""
     from unittest.mock import patch
@@ -3210,6 +3440,10 @@ if __name__ == "__main__":
     test_select_unit_prefers_live_over_ghost_sticky()
     test_move_to_clicks_foot_not_roof_centroid()
     test_city_occupied_attack_then_stand_and_capture()
+    test_attack_on_hex_finds_foot_ring()
+    test_attack_clicks_city_foot_not_hp_bar()
+    test_attack_waits_for_late_red_mark()
+    test_attack_retries_when_hp_stays()
     test_move_to_adjacent_empty_marks_clicks_city_foot()
     test_move_to_waits_for_walk_then_stood_on_city()
     test_move_to_reselects_when_foot_click_stays_adjacent()

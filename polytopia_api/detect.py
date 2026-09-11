@@ -288,6 +288,51 @@ def move_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14, min_n: int =
     return {"n": n, "ok": n >= int(min_n), "x": int(x), "y": int(y), "kind": "move_tint"}
 
 
+def _pixels_on_hex(
+    arr: np.ndarray,
+    x: int,
+    y: int,
+    pitch: int,
+    pred,
+    kind: str,
+    max_hex: float = 0.55,
+    min_n: int = 5,
+) -> dict[str, Any]:
+    h, w = arr.shape[:2]
+    pitch = max(8, int(pitch))
+    rx = max(8, int(round(pitch * 0.7)))
+    ry = max(8, int(round(pitch * 0.7 * 0.75)))
+    x0, x1 = max(0, int(x) - rx), min(w, int(x) + rx + 1)
+    y0, y1 = max(0, int(y) - ry), min(h, int(y) + ry + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 8:
+        return {"n": 0, "ok": False, "x": int(x), "y": int(y), "kind": kind}
+    gy_pitch = pitch * 0.75
+    xs: list[int] = []
+    ys: list[int] = []
+    for iy, row in enumerate(crop):
+        py = y0 + iy
+        for ix, pix in enumerate(row):
+            px = x0 + ix
+            dx = (px - int(x)) / pitch
+            dy = (py - int(y)) / gy_pitch
+            if dx * dx + dy * dy > max_hex * max_hex:
+                continue
+            if pred(int(pix[0]), int(pix[1]), int(pix[2])):
+                xs.append(px)
+                ys.append(py)
+    n = len(xs)
+    if n < max(3, int(min_n)):
+        return {"n": n, "ok": False, "x": int(x), "y": int(y), "kind": kind}
+    return {
+        "n": n,
+        "ok": True,
+        "x": int(round(sum(xs) / n)),
+        "y": int(round(sum(ys) / n)),
+        "kind": kind,
+    }
+
+
 def move_on_hex(
     arr: np.ndarray,
     x: int,
@@ -302,45 +347,33 @@ def move_on_hex(
     so the leftover blue ring is small and often dropped. Live Disrof foot
     rings can be ~5–8 px at 1280×800.
     """
-    h, w = arr.shape[:2]
-    pitch = max(8, int(pitch))
-    rx = max(8, int(round(pitch * 0.7)))
-    ry = max(8, int(round(pitch * 0.7 * 0.75)))
-    x0, x1 = max(0, int(x) - rx), min(w, int(x) + rx + 1)
-    y0, y1 = max(0, int(y) - ry), min(h, int(y) + ry + 1)
-    crop = arr[y0:y1, x0:x1]
-    if crop.size < 8:
-        return {"n": 0, "ok": False, "x": int(x), "y": int(y), "kind": "move_hex"}
-    gy_pitch = pitch * 0.75
-    xs: list[int] = []
-    ys: list[int] = []
-    for iy, row in enumerate(crop):
-        py = y0 + iy
-        for ix, pix in enumerate(row):
-            px = x0 + ix
-            dx = (px - int(x)) / pitch
-            dy = (py - int(y)) / gy_pitch
-            if dx * dx + dy * dy > max_hex * max_hex:
-                continue
-            if is_move_rgb(int(pix[0]), int(pix[1]), int(pix[2])):
-                xs.append(px)
-                ys.append(py)
-    n = len(xs)
-    if n < max(3, int(min_n)):
-        return {"n": n, "ok": False, "x": int(x), "y": int(y), "kind": "move_hex"}
-    return {
-        "n": n,
-        "ok": True,
-        "x": int(round(sum(xs) / n)),
-        "y": int(round(sum(ys) / n)),
-        "kind": "move_hex",
-    }
+    return _pixels_on_hex(arr, x, y, pitch, is_move_rgb, "move_hex", max_hex, min_n)
 
 
-def attack_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14) -> dict[str, Any]:
-    """Garrison sprites hide clustered red hexes; count attack-red under the tile."""
+def attack_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14, min_n: int = 5) -> dict[str, Any]:
+    """Garrison sprites hide clustered red hexes; count attack-red under the tile.
+
+    Live Vengir: leftover foot-red is often 5–8 px — the old n>=8 miss became
+    ``no_mark_on_target`` with a full garrison still on the hex.
+    """
     n = _patch_count(arr, x, y, radius, is_attack_rgb)
-    return {"n": n, "ok": n >= 8, "x": int(x), "y": int(y), "kind": "attack_tint"}
+    return {"n": n, "ok": n >= int(min_n), "x": int(x), "y": int(y), "kind": "attack_tint"}
+
+
+def attack_on_hex(
+    arr: np.ndarray,
+    x: int,
+    y: int,
+    pitch: int,
+    max_hex: float = 0.55,
+    min_n: int = 5,
+) -> dict[str, Any]:
+    """Centroid of attack-red pixels ON this hex.
+
+    ``find_attack_marks`` drops small rings under a Vengir giant. The red
+    lives at the city foot, not the HP bar.
+    """
+    return _pixels_on_hex(arr, x, y, pitch, is_attack_rgb, "attack_hex", max_hex, min_n)
 
 
 def find_move_marks(arr: np.ndarray) -> list[dict[str, Any]]:

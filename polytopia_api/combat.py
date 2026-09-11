@@ -132,6 +132,15 @@ def city_walk_center(city: dict[str, Any] | None, frame: tuple[int, int]) -> tup
     return None
 
 
+def city_attack_aim(
+    mark: dict[str, Any] | None,
+    city: dict[str, Any] | None,
+    frame: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Pixel that strikes the garrison. HP-bar / roof centroids miss the red hex."""
+    return city_move_aim(mark, city, frame)
+
+
 def city_move_aim(
     mark: dict[str, Any] | None,
     city: dict[str, Any] | None,
