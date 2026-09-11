@@ -929,11 +929,30 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
         name = ""
         wine_n = _wine_wall_pixels(arr, cx, cy, bw, up) if frost_plate else 0
         dark_vengir = False
-        # Live T46 after #44: walls too dark/grey to vote Bardur or Vengir
-        # still have wine veins + frost+star. Do not drop c14_23 as unknown.
-        if tribe == "unknown" and frost_plate and marks and wine_n >= WINE_SALVAGE_MIN:
-            tribe = "vengir"
-            dark_vengir = True
+        # Live T46 after #45: light wine-grey c14_23 was wine_n==0 on every
+        # hit, so the unknown+wine salvage never fired. City-sized frost+star
+        # that is not a longhouse still counts as the 5th Vengir.
+        if tribe == "unknown" and frost_plate and marks:
+            warm_u, ww_u, wh_u, dens_u = _bardur_wood_stats(arr, cx, cy, bw, up)
+            rec_unknown = {
+                "warm_n": warm_u,
+                "wood_w": ww_u,
+                "wood_h": wh_u,
+                "wood_dens": dens_u,
+                "gold_n": gold_n,
+                "n": n,
+                "w": bw,
+            }
+            if wine_n >= WINE_SALVAGE_MIN or _own_miss_is_dark_vengir(
+                rec_unknown,
+                sampled_tribe=sampled_tribe,
+                col_tribe=col_tribe,
+                frost_plate=True,
+                marks=True,
+                wine_n=wine_n,
+            ):
+                tribe = "vengir"
+                dark_vengir = True
         if tribe == "unknown":
             continue
         own = tribe == _own_tribe()
@@ -1325,6 +1344,22 @@ def _own_hit_in_top_chrome(c: dict[str, Any]) -> bool:
     return False
 
 
+def _own_wood_footprint(c: dict[str, Any]) -> bool:
+    """Bufla/Orkork longhouse wood — independent of plate n/w and gold lamps.
+
+    Live T46 after #45: grey_stone / wine salvage stole a ww≈47 longhouse
+    (Bufla hashed as c12_16) and #45's dens<0.34 gate required plate n/w
+    even when gold_n≥24, dropping the other own city from both lists.
+    Frost/wood FPs stay below ww=36 (c15_15 leak ww≈30).
+    """
+    return (
+        int(c.get("wood_w") or 0) >= 36
+        and int(c.get("wood_h") or 0) >= 60
+        and int(c.get("warm_n") or 0) >= 140
+        and float(c.get("wood_dens") or 0) >= 0.06
+    )
+
+
 def _own_wood_is_grey_stone_mass(c: dict[str, Any]) -> bool:
     """Vengir grey stone matches Bardur wood; live c12_16 is not a longhouse.
 
@@ -1332,17 +1367,22 @@ def _own_wood_is_grey_stone_mass(c: dict[str, Any]) -> bool:
     dens=0.277 gold_n=5 counted as own. Bufla/Orkork are sparse (dens≈0.08–0.09)
     with roof lamps (gold_n 68–116). Synthetic solid longhouses are denser
     still (dens≳0.45) with gold_n=0. Dict fixtures omit gold_n — not this.
-    Never a warm_n>=500 keep-floor.
+    Never a warm_n>=500 keep-floor. After #45 the same tile came back with
+    longhouse width (ww≈47) — that is Bufla, not a narrow grey slat (ww≈32).
     """
     if c.get("gold_n") is None or c.get("wood_dens") is None:
+        return False
+    if _own_wood_footprint(c):
         return False
     dens = float(c.get("wood_dens") or 0)
     gold_n = int(c.get("gold_n") or 0)
     wh = int(c.get("wood_h") or 0)
-    # Mid-density tall mass, almost no building lamps. Live c12_16 dens=0.277.
+    ww = int(c.get("wood_w") or 0)
+    # Mid-density tall NARROW mass, almost no building lamps. Live slat
+    # c12_16 dens=0.277 ww=32. A ww≳36 longhouse must stay own.
     # Scaled synthetic longhouses land dens≳0.40 (1920) / ≳0.45 (1280) with
     # gold_n=0 — must stay own. Short unit frost (wh<34) stays a drop.
-    return gold_n < 16 and 0.16 <= dens < 0.34 and wh >= 50
+    return gold_n < 16 and 0.16 <= dens < 0.34 and wh >= 50 and ww < 36
 
 
 def _sparse_own_longhouse(c: dict[str, Any]) -> bool:
@@ -1354,12 +1394,7 @@ def _sparse_own_longhouse(c: dict[str, Any]) -> bool:
     wider AND taller (Bufla/Orkork ww≳36 wh≳60 warm≳140 dens≳0.06, plate
     w≳70 or n≳900). Dict fixtures that omit plate n/w stay wood-only.
     """
-    ww = int(c.get("wood_w") or 0)
-    wh = int(c.get("wood_h") or 0)
-    warm = int(c.get("warm_n") or 0)
-    dens = float(c.get("wood_dens") or 0)
-    wood_ok = ww >= 36 and wh >= 60 and warm >= 140 and dens >= 0.06
-    if not wood_ok:
+    if not _own_wood_footprint(c):
         return False
     # Already-vetted dict fixtures omit plate size.
     if c.get("w") is None and c.get("n") is None:
@@ -1381,14 +1416,16 @@ def _own_miss_is_dark_vengir(
     Live after #43/#44: c14_23 (frost+star, gold_n<24) vanished because
     sampled_tribe *and* col_tribe were bardur (wine-grey stone). #44's
     wine_n>=8 + g<=72 still missed live veins (g≈74–86). Count lighter
-    wine-grey. Real Orkork is a sparse longhouse and stays own.
+    wine-grey. Real Orkork/Bufla longhouses stay own — never steal a
+    ww≳36 footprint into cities_enemy.
     """
     if not frost_plate or not marks:
         return False
     gold = int(rec.get("gold_n") or 0)
     if gold >= 24:
         return False
-    if _sparse_own_longhouse(rec):
+    # Split-plate longhouses fail _sparse_own_longhouse's n/w floor; still own.
+    if _own_wood_footprint(rec) or _sparse_own_longhouse(rec):
         return False
     dens = float(rec.get("wood_dens") or 0)
     if dens >= 0.34:
@@ -1397,7 +1434,12 @@ def _own_miss_is_dark_vengir(
         return True
     # Live T46 after #44: plurality Bardur, lighter wine-grey (g>72) still
     # Vengir walls. 8px was too strict — live c14_23 was 0 hits.
-    return int(wine_n or 0) >= WINE_SALVAGE_MIN
+    if int(wine_n or 0) >= WINE_SALVAGE_MIN:
+        return True
+    # After #45 wine_n==0 on the live frame. City-sized frost+star that is
+    # not a longhouse (ww<36) is still the missing 5th Vengir. Frost FPs
+    # are smaller (n≈500 w≈56) and stay dropped.
+    return int(rec.get("w") or 0) >= 70 or int(rec.get("n") or 0) >= 900
 
 
 def _own_plate_is_split_fragment(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1463,7 +1505,13 @@ def _own_wood_looks_like_building(c: dict[str, Any]) -> bool:
         # (scaled 1280 `_draw_bardur_city` n≈700 w≈55). A gold-leaked unit
         # blob (ww≈31 dens≈0.46 gold_n≥24) is not that.
         if dens < 0.34:
-            if not _sparse_own_longhouse(c):
+            # Roof lamps (gold_n≥24) on a real longhouse: the gold-star hole
+            # can split plate n/w below _sparse_own_longhouse. Keep the wood
+            # footprint. Gold-leaked frost FPs are narrower (ww≈30).
+            if gold >= 24:
+                if not _own_wood_footprint(c):
+                    return False
+            elif not _sparse_own_longhouse(c):
                 return False
         elif gold >= 24 and ww < 36:
             return False
