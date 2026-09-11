@@ -1911,6 +1911,40 @@ def _m20_disrof_mountain(im: Image.Image, hp_bar: bool = True) -> None:
     d.rectangle((638, 466, 650, 486), fill=(110, 85, 72))
 
 
+def _m20_disrof_port_east(
+    im: Image.Image,
+    hp_bar: bool = True,
+    cover_roof: bool = False,
+    cover_plate_right: bool = False,
+) -> None:
+    """Live T37: Disrof on screen, Bardur on the port immediately east.
+
+    cities_enemy went [] because the garrison / port unit ate magenta + plate
+    contrast, and the east hex was never scanned for leather (south-of-plate only).
+    """
+    d = ImageDraw.Draw(im)
+    # Water + wooden port east of the city hex.
+    d.rectangle((630, 130, 720, 200), fill=(80, 200, 240))
+    d.rectangle((632, 150, 678, 184), fill=(120, 90, 70))
+    d.rectangle((565, 100, 635, 165), fill=(90, 85, 80))
+    d.rectangle((580, 95, 620, 130), fill=(150, 74, 144))
+    if cover_roof:
+        d.ellipse((572, 88, 628, 138), fill=(48, 36, 58))
+    d.rectangle((550, 168, 650, 188), fill=(180, 180, 178))
+    d.rectangle((558, 172, 570, 184), fill=(224, 188, 63))
+    d.rectangle((588, 172, 600, 184), fill=(224, 188, 63))
+    d.rectangle((575, 174, 578, 182), fill=(40, 40, 40))
+    if cover_plate_right:
+        d.rectangle((612, 166, 650, 188), fill=(110, 85, 72))
+    # Bardur warrior on the port (east neighbor of walk center ~[636, 162]).
+    d.rectangle((640, 154, 664, 178), fill=(110, 85, 72))
+    if hp_bar:
+        d.rectangle((642, 146, 660, 151), fill=(90, 210, 50))
+    # Distant southern warrior — must not be the only unit listed.
+    d.rectangle((636, 458, 652, 461), fill=(90, 210, 50))
+    d.rectangle((638, 466, 650, 486), fill=(110, 85, 72))
+
+
 def test_observe_detects_unit_on_mountain_south_of_disrof():
     """Live T36: nearest listed units were y≈462; warrior on mountain south of Disrof missing.
 
@@ -1964,6 +1998,127 @@ def test_leather_unit_south_of_disrof_without_hp_bar():
     ]
     assert near, mapped["units"]
     assert any(u.get("owner") == "own" or u.get("tribe") == "bardur" for u in near), near
+
+
+def _t37_disrof(mapped):
+    enemy = mapped["cities_enemy"]
+    assert enemy, mapped["cities"]
+    disrof = min(
+        enemy,
+        key=lambda c: abs(int(c["x"]) - 600) + abs(int(c.get("tile_xy", [0, c["y"]])[1]) - 144),
+    )
+    assert abs(int(disrof["x"]) - 600) < 80, disrof
+    assert disrof.get("tribe") == "vengir" and disrof.get("owner") == "enemy", disrof
+    own_at = [
+        c for c in mapped["cities_own"]
+        if abs(int(c["x"]) - 600) < 50
+    ]
+    assert not own_at, own_at
+    return disrof
+
+
+def test_observe_keeps_disrof_with_unit_on_east_port():
+    """Live T37: cities_enemy [] while Disrof was on screen with a Bardur on the east port."""
+    from polytopia_api.combat import hex_pitch, tile_dist
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_port_east(im, hp_bar=True)
+    mapped = observe_map(as_rgb(im))
+    disrof = _t37_disrof(mapped)
+    near = [
+        u
+        for u in mapped["units"]
+        if int(u["x"]) >= 620 and 140 <= int(u["y"]) <= 200
+    ]
+    assert near, mapped["units"]
+    u = near[0]
+    assert u.get("owner") in {"own", "unknown"} or u.get("tribe") in {"bardur", "unknown"}
+    assert u.get("tile")
+    pitch = hex_pitch(1280, 800)
+    origin = (int(disrof["x"]), int(disrof.get("plate_y") or disrof["y"]))
+    assert tile_dist(int(u["x"]), int(u["y"]), origin[0], origin[1], pitch) <= 2.3, (u, origin, disrof)
+    assert any(int(u["y"]) >= 430 for u in mapped["units"]), mapped["units"]
+
+
+def test_observe_keeps_disrof_when_garrison_covers_roof():
+    """Garrison on the city hex must not empty cities_enemy."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_port_east(im, hp_bar=True, cover_roof=True, cover_plate_right=True)
+    mapped = observe_map(as_rgb(im))
+    disrof = _t37_disrof(mapped)
+    near = [
+        u
+        for u in mapped["units"]
+        if int(u["x"]) >= 620 and 140 <= int(u["y"]) <= 200
+    ]
+    assert near, (mapped["units"], disrof)
+
+
+def test_observe_east_port_unit_without_hp_bar():
+    """Port-east leather still counts when the nameplate/garrison covers the lime bar."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_port_east(im, hp_bar=False)
+    mapped = observe_map(as_rgb(im))
+    _t37_disrof(mapped)
+    near = [
+        u
+        for u in mapped["units"]
+        if int(u["x"]) >= 620 and 140 <= int(u["y"]) <= 200
+    ]
+    assert near, mapped["units"]
+    assert any(u.get("owner") == "own" or u.get("tribe") == "bardur" for u in near), near
+
+
+def test_sticky_disrof_stays_enemy_if_frame_flips_bardur():
+    """A later observe that samples the adjacent Bardur must not invent cities_own."""
+    from polytopia_api.observe import stabilize
+
+    prev = [{
+        "id": "c17_5",
+        "city_id": "c17_5",
+        "tile": [17, 5],
+        "tile_xy": [600, 144],
+        "x": 600,
+        "y": 144,
+        "plate_y": 178,
+        "tribe": "vengir",
+        "owner": "enemy",
+        "name": None,
+        "evidence": ["magenta_roof", "gold_lamps", "frost_plate"],
+        "confidence": 0.78,
+        "n": 400,
+    }]
+    nxt = [{
+        "id": "c17_5",
+        "city_id": "c17_5",
+        "tile": [17, 5],
+        "x": 602,
+        "y": 146,
+        "plate_y": 180,
+        "tribe": "bardur",
+        "owner": "own",
+        "evidence": ["frost_plate", "gold_star"],
+        "confidence": 0.72,
+        "n": 380,
+    }]
+    out = stabilize(nxt, prev, keep_missing=True)
+    hit = [c for c in out if c.get("id") == "c17_5"]
+    assert hit and hit[0]["tribe"] == "vengir" and hit[0]["owner"] == "enemy", hit
+    assert "magenta_roof" in (hit[0].get("evidence") or [])
 
 
 def test_stabilize_units_matches_by_tile():
@@ -2085,6 +2240,55 @@ def test_attack_fast_no_mark_not_timeout():
     assert r["ok"] is False
     assert r["reason"] in {"no_mark_on_target", "no_attack_marks", "out_of_range"}
     assert r["elapsed_s"] < 2
+    reset_obs()
+
+
+def test_select_unit_clicks_live_unit_not_sticky_ghost():
+    """seen:false sticky + settings OCR must not be the click target."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_units, reset as reset_obs
+
+    reset_obs()
+    ghost = {
+        "id": "u25", "kind": "unit", "x": 100, "y": 700, "owner": "own",
+        "seen": False, "sticky": True, "tile": [3, 25],
+    }
+    live = {
+        "id": "u25", "kind": "unit", "x": 640, "y": 162, "owner": "own",
+        "seen": True, "tile": [17, 6],
+    }
+    register_units([ghost])
+    mem = {
+        "units": [live, ghost],
+        "unit": {"settings": True, "can_move": False},
+        "move_marks": [],
+        "attack_marks": [],
+        "ready": {},
+        "hud": {},
+        "layout": {"frame": [1280, 800]},
+    }
+    live_panel = {
+        **mem,
+        "unit": {"can_move": True, "settings": False, "unit": "warrior"},
+        "move_marks": [{"x": 600, "y": 162, "n": 12}],
+    }
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    with patch.object(commands, "remember", return_value=mem), patch.object(
+        commands, "observe", return_value=live_panel
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(
+        commands, "_sleep"
+    ):
+        r = commands.select_unit(id="u25", light=True)
+    assert clicks, clicks
+    assert clicks[0] == (640, 162), clicks
+    assert r["ok"] is True
     reset_obs()
 
 
