@@ -300,27 +300,95 @@ def garrison_unit(
     units: list[dict[str, Any]],
     city: dict[str, Any] | None,
     frame: tuple[int, int],
-    max_hex: float = 0.55,
+    max_hex: float = 0.9,
 ) -> dict[str, Any] | None:
-    """Enemy (or any) unit standing on the city tile — HP bar, not the plate."""
-    center = city_tile_center(city, frame)
-    if not city or center is None:
+    """Enemy (or any) unit standing on the city tile — HP bar, not the plate.
+
+    Check walk foot and roof: garrison HP bars sit above the sprite, so a
+    single roof point at 0.55 hex dropped live Disrof defenders.
+    """
+    if not city:
+        return None
+    centers: list[tuple[int, int]] = []
+    walk = city_walk_center(city, frame)
+    roof = city_tile_center(city, frame)
+    if walk:
+        centers.append(walk)
+    if roof and roof not in centers:
+        centers.append(roof)
+    if not centers:
         return None
     pitch = hex_pitch(*frame)
     hits: list[tuple[float, dict[str, Any]]] = []
-    cx, cy = center
     for u in units or []:
         if u.get("seen") is False:
             continue
-        try:
-            d = tile_dist(int(u["x"]), int(u["y"]), cx, cy, pitch)
-        except (KeyError, TypeError, ValueError):
-            continue
-        if d <= max_hex:
-            hits.append((d, u))
+        best_d = None
+        for cx, cy in centers:
+            try:
+                d = tile_dist(int(u["x"]), int(u["y"]), cx, cy, pitch)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if best_d is None or d < best_d:
+                best_d = d
+        if best_d is not None and best_d <= max_hex:
+            hits.append((best_d, u))
     if not hits:
         return None
     hits.sort(key=lambda t: (0 if str(t[1].get("owner") or "") == "enemy" else 1, t[0]))
+    return hits[0][1]
+
+
+def land_attacker_near(
+    units: list[dict[str, Any]],
+    city: dict[str, Any] | None,
+    frame: tuple[int, int],
+    max_hex: float = 1.85,
+) -> dict[str, Any] | None:
+    """Own non-naval unit on an adjacent hex — the one that can hit the garrison.
+
+    Live Disrof: a raft on the port cannot strike the land city; a Bardur
+    warrior on the mountain/port next to it can. Skip units already ON tile.
+    """
+    if not city:
+        return None
+    centers: list[tuple[int, int]] = []
+    walk = city_walk_center(city, frame)
+    roof = city_tile_center(city, frame)
+    if walk:
+        centers.append(walk)
+    if roof and roof not in centers:
+        centers.append(roof)
+    if not centers:
+        return None
+    pitch = hex_pitch(*frame)
+    hits: list[tuple[float, dict[str, Any]]] = []
+    for u in units or []:
+        if u.get("seen") is False:
+            continue
+        owner = str(u.get("owner") or "")
+        if owner and owner != "own":
+            continue
+        kind = str(u.get("unit") or u.get("type") or "").strip().lower()
+        if kind in NAVAL:
+            continue
+        best_d = None
+        for cx, cy in centers:
+            try:
+                d = tile_dist(int(u["x"]), int(u["y"]), cx, cy, pitch)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if best_d is None or d < best_d:
+                best_d = d
+        if best_d is None:
+            continue
+        if best_d <= STANDING_HEX:
+            continue
+        if best_d <= max_hex:
+            hits.append((best_d, u))
+    if not hits:
+        return None
+    hits.sort(key=lambda t: t[0])
     return hits[0][1]
 
 
