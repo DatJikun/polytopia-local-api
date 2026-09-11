@@ -70,8 +70,9 @@ def villages_enabled() -> bool:
 def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tuple[str, list[int]]:
     """Majority tribe in a patch — one water pixel must not become Imperius.
 
-    Vengir cities are dark-grey stone + purple roofs. Majority vote would call
-    them Bardur; any real purple roof wins.
+    Vengir cities are dark-grey stone + purple roofs + gold window lights.
+    Those lamps match Oumaji sand pixel-for-pixel; context wins: any purple
+    roof, or gold-on-dark-stone, is Vengir — not a desert city.
     """
     h, w = arr.shape[:2]
     x0, x1 = max(0, x - radius), min(w, x + radius + 1)
@@ -90,9 +91,19 @@ def sample_patch_tribe(arr: np.ndarray, x: int, y: int, radius: int = 10) -> tup
     if not votes:
         return "unknown", rgb
     vengir_n = votes.get("vengir", 0)
+    oumaji_n = votes.get("oumaji", 0)
+    bardur_n = votes.get("bardur", 0)
     total = sum(votes.values())
-    if vengir_n >= 5 or (total and vengir_n >= 0.12 * total):
+    mean_lum = float(patch.astype(np.int32).mean())
+    # Purple roof, or gold windows on a dark building (Disrof), not sand.
+    if vengir_n >= 3 or (total and vengir_n >= 0.08 * total):
         return "vengir", rgb
+    if oumaji_n and vengir_n:
+        return "vengir", rgb
+    if oumaji_n and mean_lum < 135 and oumaji_n < 0.50 * total:
+        return "vengir", rgb
+    if oumaji_n and bardur_n and oumaji_n <= bardur_n:
+        return "vengir" if mean_lum < 140 else "bardur", rgb
     tribe = max(votes, key=votes.get)
     return tribe, rgb
 
@@ -165,38 +176,60 @@ def _clean_city_name(text: str) -> str:
 
 
 def plate_name(arr: np.ndarray, cx: int, cy: int, bw: int, bh: int) -> str:
-    """OCR the nameplate. Moonrise plates are light-grey frost with dark text.
+    """OCR the nameplate. Moonrise: [blue icon] Name [gold star] on frost.
 
-    Forced invert (HUD-style) turns letters white and tesseract misses Disrof.
+    Forced invert (HUD-style) turns letters white. Crop the *middle* of the
+    plate so the icon/star do not become 'ounce' / 'EROS'.
     """
     try:
         from pathlib import Path
 
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         from . import driver
     except Exception:
         return ""
     h, w = arr.shape[:2]
-    x0 = max(0, int(cx - bw // 2 - 10))
-    x1 = min(w, cx + bw // 2 + 10)
-    y0 = max(0, int(cy - max(8, bh // 2) - 6))
-    y1 = min(h, cy + max(8, bh // 2) + 6)
+    pad_x = max(8, bw // 10)
+    x0 = max(0, int(cx - bw // 2 - pad_x))
+    x1 = min(w, cx + bw // 2 + pad_x)
+    y0 = max(0, int(cy - max(8, bh // 2) - 4))
+    y1 = min(h, cy + max(8, bh // 2) + 4)
     if x1 - x0 < 12 or y1 - y0 < 6:
         return ""
     crop = Image.fromarray(arr[y0:y1, x0:x1].astype("uint8"), "RGB")
+    cw, ch = crop.size
+    inner = crop.crop((int(cw * 0.16), 0, max(int(cw * 0.16) + 1, int(cw * 0.78)), ch))
+    if inner.size[0] < 10 or inner.size[1] < 5:
+        inner = crop
     best = ""
     try:
-        for invert in (None, False, True):
+        grey = ImageOps.autocontrast(inner.convert("L"))
+        binary = grey.point(lambda p: 255 if p >= 145 else 0)
+        variants = [
+            (inner, None, 7),
+            (inner, False, 7),
+            (inner, False, 8),
+            (binary, False, 8),
+            (inner, True, 7),
+        ]
+        for src, invert, psm in variants:
+            if src.mode == "L":
+                prepared = src.resize(
+                    (max(1, src.size[0] * 4), max(1, src.size[1] * 4)),
+                    Image.Resampling.LANCZOS,
+                )
+            else:
+                prepared = driver._prep_ocr(src, scale=4, invert=invert)
             text = driver.ocr_image(
-                driver._prep_ocr(crop, scale=3, invert=invert),
+                prepared,
                 Path("/tmp/polytopia-plate.png"),
-                psm=7,
+                psm=psm,
             )
             raw = _clean_city_name(text)
             if len(raw) > len(best):
                 best = raw
-            if len(raw) >= 4:
+            if len(raw) >= 5:
                 break
     except Exception:
         return best
@@ -288,7 +321,7 @@ def find_cities(arr: np.ndarray) -> list[dict[str, Any]]:
             continue
         if not _plate_contrast(arr, cx, cy, bw, bh):
             continue
-        tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up), radius=16)
+        tribe, rgb = sample_patch_tribe(arr, cx, max(0, cy - up - max(4, bh // 2)), radius=14)
         if is_water_rgb(*rgb):
             continue
         name = plate_name(arr, cx, cy, bw, bh)

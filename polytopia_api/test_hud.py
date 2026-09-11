@@ -400,6 +400,33 @@ def test_stable_entity_ids():
     out = stabilize(nxt, prev, max_dist=56)
     assert out[0]["id"] == "c0" and out[0]["stable"]
     assert out[1]["id"] == "c8" and not out[1]["stable"]
+    sticky = stabilize(
+        [{"id": "c9", "x": 204, "y": 82, "tribe": "oumaji", "owner": "enemy", "name": None}],
+        [{"id": "c1", "x": 200, "y": 80, "tribe": "vengir", "owner": "enemy", "name": "Disrof"}],
+    )
+    assert sticky[0]["id"] == "c1"
+    assert sticky[0]["tribe"] == "vengir"
+    assert sticky[0]["name"] == "Disrof"
+
+
+def test_gold_windows_are_not_oumaji():
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import sample_patch_tribe
+
+    im = Image.new("RGB", (1920, 1200), (30, 40, 28))
+    d = ImageDraw.Draw(im)
+    d.rectangle((200, 355, 270, 418), fill=(90, 85, 80))
+    d.rectangle((214, 348, 256, 378), fill=(150, 74, 144))
+    d.rectangle((220, 382, 232, 396), fill=(224, 188, 63))
+    d.rectangle((186, 428, 308, 450), fill=(180, 180, 178))
+    d.ellipse((278, 432, 296, 448), fill=(224, 188, 63))
+    d.rectangle((200, 434, 206, 444), fill=(40, 40, 40))
+    arr = as_rgb(im)
+    cities = find_cities(arr)
+    frost = [c for c in cities if 170 <= int(c["x"]) <= 310]
+    assert frost and all(c["tribe"] == "vengir" and c["owner"] == "enemy" for c in frost), cities
+    tribe, _ = sample_patch_tribe(arr, 235, 380, radius=14)
+    assert tribe == "vengir", tribe
 
 
 def test_snapshot_alerts():
@@ -688,6 +715,7 @@ if __name__ == "__main__":
     test_plan_priorities()
     test_hud_star_split()
     test_stable_entity_ids()
+    test_gold_windows_are_not_oumaji()
     test_snapshot_alerts()
     test_snapshot_refuses_stale_turn()
     test_observe_hud_untrusts_ocr_behind_floor()

@@ -74,6 +74,10 @@ def stabilize(
             d["id"] = best["id"]
             if best.get("name") and not d.get("name"):
                 d["name"] = best["name"]
+            # Gold windows / stars must not flip a Vengir city to Oumaji next frame.
+            if str(best.get("tribe") or "") == "vengir" and str(d.get("tribe") or "") == "oumaji":
+                d["tribe"] = "vengir"
+                d["owner"] = "own" if str(best.get("owner") or "") == "own" else "enemy"
             d["stable"] = True
             used.add(str(best["id"]))
         else:
