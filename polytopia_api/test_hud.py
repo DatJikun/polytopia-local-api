@@ -2713,6 +2713,147 @@ def test_city_occupied_attack_then_stand_and_capture():
     reset_obs()
 
 
+def test_move_to_adjacent_empty_marks_clicks_city_foot():
+    """Live T39: u3→c14_24 tile_dist≈0.94 / move_range=1 returned no_move_marks."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, register_units, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c14_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [14, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    register_units([{"id": "u3", "kind": "unit", "x": 164, "y": 80, "owner": "own"}])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [],
+        "units": [{"id": "u3", "x": 164, "y": 80, "owner": "own", "seen": True}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior", "settings": False},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **before,
+        "units": [{"id": "u3", "x": 201, "y": 94, "owner": "own", "seen": True}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": before["unit"]}
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u3", city_id="c14_24")
+    assert r.get("reason") != "no_move_marks", r
+    assert r.get("reason") != "need x,y or city_id/to_id", r
+    assert clicks, clicks
+    assert clicks[0][1] > 81, clicks
+    assert (200, 80) not in clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    reset_obs()
+
+
+def test_second_move_to_resolves_sticky_city_id():
+    """Live T39: follow-up u4→c14_24 said need x,y despite passing city_id."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c14_24",
+        "kind": "city",
+        "x": 200,
+        "y": 80,
+        "plate_y": 110,
+        "tile": [14, 24],
+        "tile_xy": [200, 80],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    blank = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [],
+        "cities_own": [],
+        "cities_enemy": [],
+        "units": [{"id": "u4", "x": 164, "y": 80, "owner": "own"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "move_marks": [],
+        "attack_marks": [],
+        "overlay": {},
+        "ready": {},
+        "hud": {"turn": 3, "turn_trusted": False},
+        "turn_diff": None,
+    }
+    after = {
+        **blank,
+        "units": [{"id": "u4", "x": 201, "y": 94, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    selected = {"ok": True, "unit": blank["unit"]}
+    with patch.object(commands, "remember", return_value=blank), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u4", city_id="c14_24")
+    assert r.get("reason") != "need x,y or city_id/to_id", r
+    assert r.get("dest") and r["dest"]["id"] == "c14_24", r
+    assert clicks, clicks
+    reset_obs()
+
+
+def test_lookup_city_id_ignores_units():
+    from polytopia_api.observe import lookup, register_cities, reset as reset_obs
+
+    reset_obs()
+    city = {"id": "c14_24", "city_id": "c14_24", "kind": "city", "x": 200, "y": 80, "tile": [14, 24]}
+    register_cities([city])
+    mem = {
+        "cities": [],
+        "cities_enemy": [],
+        "units": [{"id": "u4", "x": 10, "y": 10, "near_city_id": "c14_24", "city_id": "c14_24"}],
+        "move_marks": [{"id": "c14_24", "x": 1, "y": 1}],
+    }
+    hit = lookup(mem, "c14_24")
+    assert hit and hit.get("kind") == "city" and hit.get("x") == 200, hit
+    reset_obs()
+
+
 if __name__ == "__main__":
     test_parse_hud()
     test_parse_unit()
@@ -2773,4 +2914,7 @@ if __name__ == "__main__":
     test_select_unit_prefers_live_over_ghost_sticky()
     test_move_to_clicks_foot_not_roof_centroid()
     test_city_occupied_attack_then_stand_and_capture()
+    test_move_to_adjacent_empty_marks_clicks_city_foot()
+    test_second_move_to_resolves_sticky_city_id()
+    test_lookup_city_id_ignores_units()
     print("ok")
