@@ -1886,6 +1886,14 @@ def test_three_bardur_not_hud_fog_c18_1():
     assert "c18_1" not in ids
 
 
+def _draw_unit_frost_phantom(d, cx: int, plate_y: int) -> None:
+    """Mid-map false city: unit-sized wood + frost + gold star (live c12_16 / c17_14)."""
+    d.rectangle((cx - 16, plate_y - 40, cx + 16, plate_y - 8), fill=(90, 85, 80))
+    d.rectangle((cx - 36, plate_y - 6, cx + 36, plate_y + 10), fill=(180, 180, 178))
+    d.ellipse((cx + 18, plate_y - 4, cx + 32, plate_y + 8), fill=(224, 188, 63))
+    d.rectangle((cx - 28, plate_y - 2, cx - 22, plate_y + 6), fill=(40, 40, 40))
+
+
 def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
     """Live T46 after #31: Game Stats Bardur 2; observe listed 4.
 
@@ -1957,6 +1965,117 @@ def test_two_bardur_dedupe_orkork_split_and_mid_phantom():
     assert not ({"c15_24", "c16_24"} <= own_ids), out
     assert "c12_16" not in own_ids, out
     assert len([c for c in out if c.get("owner") == "own"]) == 2, out
+
+
+def test_two_bardur_dedupe_close_plates_drop_mid_phantoms():
+    """Live T46 after #31 + Game Stats dismiss: cities_own=5 vs Bardur 2.
+
+    Orkork split c15_24 @(541,657) + c16_24 @(574,667) ~35px; mid-map phantoms
+    c12_16 @(441,455) and c17_14 @(610,379). Bufla + Orkork stay; enemies stay.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map, session_cities
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 252, 470)   # Bufla → c7_16
+    _draw_bardur_city(d, 541, 690)   # Orkork
+    # Second Orkork plate ~35px east (gold-star hole / split banner).
+    d.rectangle((574 - 40, 700 - 10, 574 + 40, 700 + 12), fill=(180, 180, 178))
+    d.ellipse((574 + 22, 700 - 6, 574 + 38, 700 + 8), fill=(224, 188, 63))
+    d.rectangle((574 - 28, 700 - 4, 574 - 22, 700 + 6), fill=(40, 40, 40))
+    d.rectangle((574 - 18, 700 - 70, 574 + 18, 700 - 22), fill=(90, 85, 80))
+    _draw_unit_frost_phantom(d, 441, 470)
+    _draw_unit_frost_phantom(d, 610, 400)
+    _draw_disrof_city(d, 980, 260)
+    _draw_disrof_city(d, 1100, 420)
+    _draw_disrof_city(d, 900, 560)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    enemy = mapped["cities_enemy"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    xs = sorted(int(c["x"]) for c in own)
+    assert any(abs(x - 252) < 50 for x in xs), own
+    assert any(abs(x - 541) < 55 or abs(x - 574) < 55 for x in xs), own
+    assert all(abs(int(c["x"]) - 441) > 40 or abs(int(c.get("plate_y") or c["y"]) - 470) > 40 for c in own), own
+    assert all(abs(int(c["x"]) - 610) > 40 or abs(int(c.get("plate_y") or c["y"]) - 400) > 40 for c in own), own
+    vengir = [c for c in enemy if c.get("tribe") == "vengir"]
+    assert len(vengir) >= 3, mapped["cities"]
+
+    bufla = _own_city(7, y=440)
+    bufla["id"] = bufla["city_id"] = "c7_16"
+    bufla["tile"] = [7, 16]
+    bufla["x"], bufla["y"] = 255, 440
+    bufla["plate_y"] = 456
+    bufla["w"] = 90
+    bufla["n"] = 1421
+    orkork_a = _own_city(15, y=657)
+    orkork_a["id"] = orkork_a["city_id"] = "c15_24"
+    orkork_a["tile"] = [15, 24]
+    orkork_a["x"], orkork_a["y"] = 541, 657
+    orkork_a["plate_y"] = 675
+    orkork_a["w"] = 70
+    orkork_a["n"] = 900
+    orkork_b = _own_city(16, y=667)
+    orkork_b["id"] = orkork_b["city_id"] = "c16_24"
+    orkork_b["tile"] = [16, 24]
+    orkork_b["x"], orkork_b["y"] = 574, 667
+    orkork_b["plate_y"] = 675
+    orkork_b["w"] = 50
+    orkork_b["n"] = 600
+    phantom_mid = {
+        "id": "c12_16", "city_id": "c12_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 441, "y": 455, "plate_y": 470, "tile": [12, 16], "n": 893, "w": 59,
+        "warm_n": 992, "wood_w": 32, "wood_h": 31, "wood_dens": 0.31, "seen": True,
+    }
+    phantom_center = {
+        "id": "c17_14", "city_id": "c17_14", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 610, "y": 379, "plate_y": 400, "tile": [17, 14], "n": 893, "w": 59,
+        "warm_n": 575, "wood_w": 25, "wood_h": 23, "wood_dens": 0.17, "seen": True,
+    }
+    enemy_hits = [
+        _enemy_city("c27_9", [27, 9], 978, 243),
+        _enemy_city("c30_15", [30, 15], 1098, 403),
+        _enemy_city("c25_20", [25, 20], 898, 543),
+    ]
+    out = session_cities([bufla, orkork_a, orkork_b, phantom_mid, phantom_center, *enemy_hits])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert len(own_ids) == 2, out
+    assert "c7_16" in own_ids, out
+    assert bool({"c15_24", "c16_24"} & own_ids), out
+    assert not ({"c15_24", "c16_24"} <= own_ids), out
+    assert "c12_16" not in own_ids and "c17_14" not in own_ids, out
+    enemy_ids = {c["id"] for c in out if c.get("owner") == "enemy"}
+    assert len(enemy_ids) >= 3, out
+
+
+def test_own_close_plates_merge_adjacent_stay_two():
+    """35px is one city; 80px is two Bardur 1 hex apart."""
+    from polytopia_api.entities import session_cities
+
+    a = _own_city(15, y=657)
+    a["id"] = a["city_id"] = "c15_24"
+    a["tile"] = [15, 24]
+    a["x"], a["y"], a["plate_y"] = 541, 657, 675
+    a["w"] = 70
+    b = _own_city(16, y=667)
+    b["id"] = b["city_id"] = "c16_24"
+    b["tile"] = [16, 24]
+    b["x"], b["y"], b["plate_y"] = 574, 667, 675
+    b["w"] = 50
+    out = session_cities([a, b])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert len(own_ids) == 1, out
+    assert own_ids <= {"c15_24", "c16_24"}
+
+
 
 
 def test_two_bardur_match_screen_not_frost_phantoms():
@@ -4602,6 +4721,8 @@ if __name__ == "__main__":
     test_two_bardur_match_screen_not_frost_phantoms()
     test_three_bardur_not_hud_fog_c18_1()
     test_two_bardur_dedupe_orkork_split_and_mid_phantom()
+    test_two_bardur_dedupe_close_plates_drop_mid_phantoms()
+    test_own_close_plates_merge_adjacent_stay_two()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
