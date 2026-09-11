@@ -304,25 +304,40 @@ def stabilize_units(
     max_dist: int = 56,
     keep_missing: bool = True,
 ) -> list[dict[str, Any]]:
-    """Keep u2/u5/u11 for the turn even when an HP bar flickers after /attack."""
+    """Keep u2/u5/u11 for the turn even when an HP bar flickers after /attack.
+
+    Match by tile first so a warrior that steps one hex (mountain → Disrof)
+    keeps the same id instead of minting u12 while u5 stays stuck in the south.
+    """
     used: set[str] = set()
     out: list[dict[str, Any]] = []
     for it in items or []:
         d = dict(it)
         d["seen"] = True
-        best = None
-        best_d = max_dist
-        for p in prev or []:
-            pid = str(p.get("id") or "")
-            if not pid or pid in used:
-                continue
-            try:
-                dist = ((int(d["x"]) - int(p["x"])) ** 2 + (int(d["y"]) - int(p["y"])) ** 2) ** 0.5
-            except (KeyError, TypeError, ValueError):
-                continue
-            if dist <= best_d:
-                best_d = dist
-                best = p
+        tile = _tile_key(d)
+        tile_hit = None
+        if tile is not None:
+            for p in prev or []:
+                pid = str(p.get("id") or "")
+                if not pid or pid in used:
+                    continue
+                if _tile_key(p) == tile:
+                    tile_hit = p
+                    break
+        best = tile_hit
+        best_d = 0.0 if tile_hit else max_dist
+        if best is None:
+            for p in prev or []:
+                pid = str(p.get("id") or "")
+                if not pid or pid in used:
+                    continue
+                try:
+                    dist = ((int(d["x"]) - int(p["x"])) ** 2 + (int(d["y"]) - int(p["y"])) ** 2) ** 0.5
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if dist <= best_d:
+                    best_d = dist
+                    best = p
         if best and best.get("id"):
             d["id"] = best["id"]
             d["stable"] = True
@@ -380,8 +395,8 @@ def observe(shot: Any | None = None, mode: str = "full") -> dict[str, Any]:
     overlay = pix["overlay"]
     arr = detect.as_rgb(im)
     if light:
-        mapped_units = entities.find_units(arr)
         mapped_cities = list(prev.get("cities") or [])
+        mapped_units = entities.attach_units_near_cities(arr, entities.find_units(arr), mapped_cities)
         villages = list(prev.get("villages") or [])
         fog = list(prev.get("fog_edge") or [])
         own_tribe = prev.get("own_tribe") or entities._own_tribe()

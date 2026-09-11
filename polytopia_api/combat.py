@@ -165,6 +165,23 @@ def tile_dist(x0: int, y0: int, x1: int, y1: int, pitch: int) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+def hex_neighbors(x: int, y: int, pitch: int) -> list[tuple[int, int]]:
+    """Adjacent hex centers. South (camera, +y) first — live Disrof mountain."""
+    p = max(8, int(pitch))
+    dy = int(round(p * 0.75))
+    hx = int(round(p * 0.5))
+    return [
+        (int(x), int(y) + dy),
+        (int(x) + hx, int(y) + dy),
+        (int(x) - hx, int(y) + dy),
+        (int(x) + p, int(y)),
+        (int(x) - p, int(y)),
+        (int(x), int(y) - dy),
+        (int(x) + hx, int(y) - dy),
+        (int(x) - hx, int(y) - dy),
+    ]
+
+
 def move_range(unit_type: str | None) -> int:
     kind = (unit_type or "").strip().lower() or "warrior"
     if kind == "boat":
@@ -258,6 +275,8 @@ def garrison_unit(
     hits: list[tuple[float, dict[str, Any]]] = []
     cx, cy = center
     for u in units or []:
+        if u.get("seen") is False:
+            continue
         try:
             d = tile_dist(int(u["x"]), int(u["y"]), cx, cy, pitch)
         except (KeyError, TypeError, ValueError):
@@ -301,6 +320,8 @@ def unit_on_city(
     hit = None
     best_d = max_hex
     for u in units or []:
+        if u.get("seen") is False:
+            continue
         if want_owner:
             owner = str(u.get("owner") or "")
             if owner and owner != want_owner:

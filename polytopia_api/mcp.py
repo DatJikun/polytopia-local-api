@@ -29,7 +29,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "local_observe",
-        "description": "Screenshot observe: HUD (turn/stars/score, stale if cached), stable units/cities with tribe color, fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
+        "description": "Screenshot observe: HUD, stable units/cities (units next to enemy cities e.g. mountain south of Disrof keep sticky ids), fog_edge. Villages off unless POLYTOPIA_VILLAGES=1. Includes turn_diff vs last End Turn snapshot.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {

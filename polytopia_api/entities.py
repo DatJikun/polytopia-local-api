@@ -123,48 +123,304 @@ def _bbox(xs: np.ndarray, ys: np.ndarray, cx: int, cy: int, radius: int) -> tupl
     return int(xs[near].max() - xs[near].min()) + 1, int(ys[near].max() - ys[near].min()) + 1
 
 
-def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
-    """Lime HP bars (not yellow city tents). Click the body just below the bar."""
-    y0, y1, x0, x1 = _map_bounds(arr)
-    region = arr[y0:y1, x0:x1]
+def _hp_green_mask(region: np.ndarray) -> np.ndarray:
+    """Saturated lime HP bars. Dim mountain bars still count; grass does not."""
     r, g, b = region[:, :, 0], region[:, :, 1], region[:, :, 2]
-    # Saturated lime; Oumaji yellow fails g >= r+40.
-    green = (g >= 155) & (g >= r + 40) & (g >= b + 40) & (r <= 170) & (b <= 140)
-    ys, xs = np.where(green)
-    rad, mn = _cluster_params(arr, 14, 6)
-    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(16, rad * 2))
+    r32, g32, b32 = r.astype(np.int32), g.astype(np.int32), b.astype(np.int32)
+    bright = (g >= 155) & (g >= r + 40) & (g >= b + 40) & (r <= 170) & (b <= 140)
+    # Live 1280×800 mountain bars anti-alias toward ~140g.
+    dim = (
+        (g32 >= 138)
+        & (g32 <= 200)
+        & ((g32 - r32) >= 48)
+        & ((g32 - b32) >= 48)
+        & (r32 <= 155)
+        & (b32 <= 125)
+    )
+    return bright | dim
+
+
+def _is_leather_rgb(r: int, g: int, b: int) -> bool:
+    """Bardur unit hide — warmer brown than mountain grey / snow / Vengir stone."""
+    if r < 55 or r > 155 or g < 40 or b < 40:
+        return False
+    if r < g or r < b:
+        return False
+    if r - min(g, b) < 8:
+        return False
+    if max(r, g, b) - min(r, g, b) > 48:
+        return False
+    return not is_water_rgb(r, g, b)
+
+
+def _unit_body_sample(arr: np.ndarray, cx: int, cy: int) -> tuple[str, list[int], int]:
+    """Tribe under an HP bar. Snow/ice below the bar is a mountain, not water."""
     h, w = arr.shape[:2]
     drop = max(8, int(round(18 * h / coords.BASE_H)))
+    offsets = [
+        (0, drop),
+        (0, drop + drop // 2),
+        (0, drop * 2),
+        (-8, drop),
+        (8, drop),
+        (0, max(6, drop // 2)),
+    ]
+    fallback_rgb = sample(arr, cx, min(h - 1, cy + drop))
+    fallback_y = min(h - 1, cy + drop)
+    for dx, dy in offsets:
+        ux = min(max(0, cx + dx), w - 1)
+        uy = min(max(0, cy + dy), h - 1)
+        rgb = sample(arr, ux, uy)
+        if is_water_rgb(*rgb):
+            continue
+        tribe, prgb = sample_patch_tribe(arr, ux, uy, radius=6)
+        if tribe != "unknown":
+            return tribe, prgb, uy
+        if _is_leather_rgb(*rgb):
+            return "bardur", rgb, uy
+        fallback_rgb = prgb
+        fallback_y = uy
+    return "unknown", fallback_rgb, fallback_y
+
+
+def _stamp_unit_tile(u: dict[str, Any], frame: tuple[int, int]) -> dict[str, Any]:
+    try:
+        gx, gy = combat.tile_grid(int(u["x"]), int(u["y"]), frame)
+        u["tile"] = [gx, gy]
+    except (KeyError, TypeError, ValueError):
+        pass
+    return u
+
+
+def _unit_record(
+    cx: int,
+    uy: int,
+    bar_y: int,
+    n: int,
+    tribe: str,
+    rgb: list[int],
+    hp: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rec: dict[str, Any] = {
+        "kind": "unit",
+        "x": int(cx),
+        "y": int(uy),
+        "bar_y": int(bar_y),
+        "n": int(n),
+        "hp": hp,
+        "tribe": tribe,
+        "owner": _owner_of(tribe),
+        "rgb": rgb,
+    }
+    if extra:
+        rec.update(extra)
+    return rec
+
+
+def _hp_of_bar(arr: np.ndarray, cx: int, cy: int) -> str:
+    pr, pg, pb = sample(arr, cx, cy)
+    if pr >= 170 and pg <= 90:
+        return "critical"
+    if pr >= 170 and pg >= 140 and pb <= 90:
+        return "hurt"
+    return "full"
+
+
+def find_units(arr: np.ndarray) -> list[dict[str, Any]]:
+    """Lime HP bars (not yellow city tents). Click the body just below the bar.
+
+    Units on snowy mountains used to vanish: the pixel under the bar is ice,
+    ``is_water_rgb`` skipped them, and /observe only listed southern warriors.
+    """
+    y0, y1, x0, x1 = _map_bounds(arr)
+    region = arr[y0:y1, x0:x1]
+    green = _hp_green_mask(region)
+    ys, xs = np.where(green)
+    rad, mn = _cluster_params(arr, 14, 6)
+    mn = min(mn, 3)
+    clusters = merge_clusters(_cluster(ys + y0, xs + x0, radius=rad, min_size=mn), dist=max(16, rad * 2))
+    h, w = arr.shape[:2]
+    frame = (w, h)
     max_n = max(40, int(round(220 * (h * w) / (coords.BASE_W * coords.BASE_H))))
     out: list[dict[str, Any]] = []
     for n, cx, cy in clusters:
         if n > max_n:
             continue
-        uy = min(h - 1, cy + drop)
-        tribe, rgb = sample_patch_tribe(arr, cx, uy, radius=6)
-        if is_water_rgb(*rgb):
+        tribe, rgb, uy = _unit_body_sample(arr, cx, cy)
+        rec = _unit_record(cx, uy, cy, n, tribe, rgb, _hp_of_bar(arr, cx, cy))
+        _stamp_unit_tile(rec, frame)
+        rec["id"] = f"u{len(out)}"
+        out.append(rec)
+    out.sort(key=lambda u: (int(u.get("y") or 0), int(u.get("x") or 0)))
+    for i, rec in enumerate(out):
+        rec["id"] = f"u{i}"
+    return out[:24]
+
+
+def _lime_in_patch(arr: np.ndarray, x: int, y: int, radius: int) -> tuple[int, int, int]:
+    h, w = arr.shape[:2]
+    x0, x1 = max(0, int(x) - radius), min(w, int(x) + radius + 1)
+    y0, y1 = max(0, int(y) - radius), min(h, int(y) + radius + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 8:
+        return 0, int(x), int(y)
+    mask = _hp_green_mask(crop)
+    n = int(mask.sum())
+    if n <= 0:
+        return 0, int(x), int(y)
+    ys, xs = np.where(mask)
+    return n, int(round(xs.mean() + x0)), int(round(ys.mean() + y0))
+
+
+def _leather_in_patch(arr: np.ndarray, x: int, y: int, radius: int) -> tuple[int, int, int]:
+    h, w = arr.shape[:2]
+    x0, x1 = max(0, int(x) - radius), min(w, int(x) + radius + 1)
+    y0, y1 = max(0, int(y) - radius), min(h, int(y) + radius + 1)
+    crop = arr[y0:y1, x0:x1]
+    if crop.size < 8:
+        return 0, int(x), int(y)
+    r = crop[:, :, 0].astype(np.int32)
+    g = crop[:, :, 1].astype(np.int32)
+    b = crop[:, :, 2].astype(np.int32)
+    leather = (
+        (r >= 55) & (r <= 155) & (g >= 40) & (b >= 40)
+        & (r >= g) & (r >= b)
+        & ((r - np.minimum(g, b)) >= 8)
+        & ((np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) <= 48)
+    )
+    n = int(leather.sum())
+    if n <= 0:
+        return 0, int(x), int(y)
+    ys, xs = np.where(leather)
+    return n, int(round(xs.mean() + x0)), int(round(ys.mean() + y0))
+
+
+def _unit_near_existing(units: list[dict[str, Any]], x: int, y: int, pitch: int) -> bool:
+    for u in units:
+        try:
+            if combat.tile_dist(int(u["x"]), int(u["y"]), x, y, pitch) <= 0.7:
+                return True
+        except (KeyError, TypeError, ValueError):
             continue
-        pr, pg, pb = sample(arr, cx, cy)
-        hp = "full"
-        if pr >= 170 and pg <= 90:
-            hp = "critical"
-        elif pr >= 170 and pg >= 140 and pb <= 90:
-            hp = "hurt"
-        out.append(
-            {
-                "id": f"u{len(out)}",
-                "kind": "unit",
-                "x": cx,
-                "y": uy,
-                "bar_y": cy,
-                "n": n,
-                "hp": hp,
-                "tribe": tribe,
-                "owner": _owner_of(tribe),
-                "rgb": rgb,
-            }
+    return False
+
+
+def _tag_near_cities(units: list[dict[str, Any]], cities: list[dict[str, Any]], frame: tuple[int, int]) -> None:
+    pitch = combat.hex_pitch(*frame)
+    for u in units:
+        best = None
+        best_d = 1.85
+        for c in cities or []:
+            origin = combat.city_walk_center(c, frame) or combat.city_tile_center(c, frame)
+            if origin is None:
+                continue
+            try:
+                d = combat.tile_dist(int(u["x"]), int(u["y"]), origin[0], origin[1], pitch)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if d <= best_d:
+                best_d = d
+                best = c
+        if best is None:
+            continue
+        cid = str(best.get("id") or best.get("city_id") or "")
+        u["near_city_id"] = cid or None
+        u["near_city_hex"] = round(best_d, 3)
+        if best_d <= combat.ON_CITY_MARK_HEX:
+            u["on_city_id"] = cid or None
+
+
+def attach_units_near_cities(
+    arr: np.ndarray,
+    units: list[dict[str, Any]],
+    cities: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Pick up warriors whose HP bar hides under a nameplate (mountain south of Disrof)."""
+    if not cities:
+        _tag_near_cities(units, cities, (arr.shape[1], arr.shape[0]))
+        return units
+    h, w = arr.shape[:2]
+    frame = (w, h)
+    pitch = combat.hex_pitch(*frame)
+    rad = max(12, int(round(pitch * 0.7)))
+    out = list(units)
+    for c in cities:
+        origin = combat.city_walk_center(c, frame) or combat.city_tile_center(c, frame)
+        if origin is None:
+            try:
+                origin = (int(c["x"]), int(c["y"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        cid = str(c.get("id") or c.get("city_id") or "")
+        try:
+            plate_y = int(c.get("plate_y") or origin[1])
+        except (TypeError, ValueError):
+            plate_y = int(origin[1])
+        spots = [origin] + combat.hex_neighbors(origin[0], origin[1], pitch)
+        try:
+            spots.append((int(c["x"]), plate_y + int(round(0.75 * pitch))))
+        except (KeyError, TypeError, ValueError):
+            pass
+        for i, (sx, sy) in enumerate(spots):
+            if sx < 0 or sy < 0 or sx >= w or sy >= h:
+                continue
+            if _unit_near_existing(out, sx, sy, pitch):
+                continue
+            on_city = i == 0
+            lime_n, lx, ly = _lime_in_patch(arr, sx, sy - max(4, pitch // 5), rad)
+            leather_n, bx, by = (0, sx, sy)
+            # City buildings are Bardur-wood / grey stone — never mint a unit
+            # from the building itself. Leather centroid must sit SOUTH of the
+            # nameplate (live: mountain immediately south of Disrof).
+            if not on_city and sy >= plate_y - 2:
+                leather_n, bx, by = _leather_in_patch(arr, sx, sy, rad)
+                if by < plate_y + 2:
+                    leather_n = 0
+            if lime_n < 3 and leather_n < 10:
+                continue
+            if lime_n >= 3:
+                tribe, rgb, uy = _unit_body_sample(arr, lx, ly)
+                rec = _unit_record(
+                    lx,
+                    uy,
+                    ly,
+                    lime_n,
+                    tribe if tribe != "unknown" else (_own_tribe() if leather_n >= 8 else tribe),
+                    rgb,
+                    _hp_of_bar(arr, lx, ly),
+                    extra={"from": "city_hex_hp", "near_city_id": cid or None},
+                )
+            else:
+                rec = _unit_record(
+                    bx,
+                    by,
+                    by,
+                    leather_n,
+                    _own_tribe(),
+                    sample(arr, bx, by),
+                    "full",
+                    extra={"from": "city_hex_leather", "near_city_id": cid or None},
+                )
+            if rec.get("owner") == "unknown" and leather_n >= 10:
+                rec["tribe"] = _own_tribe()
+                rec["owner"] = "own"
+            _stamp_unit_tile(rec, frame)
+            if _unit_near_existing(out, int(rec["x"]), int(rec["y"]), pitch):
+                continue
+            rec["id"] = f"u{len(out)}"
+            out.append(rec)
+    _tag_near_cities(out, cities, frame)
+    out.sort(
+        key=lambda u: (
+            0 if u.get("near_city_id") and float(u.get("near_city_hex") or 9) <= 1.5 else 1,
+            int(u.get("y") or 0),
+            int(u.get("x") or 0),
         )
-    return out[:16]
+    )
+    for i, rec in enumerate(out):
+        rec["id"] = f"u{i}"
+    return out[:24]
 
 
 def _clean_city_name(text: str) -> str:
@@ -804,8 +1060,8 @@ def find_fog_edge(arr: np.ndarray) -> list[dict[str, Any]]:
 
 
 def observe_map(arr: np.ndarray) -> dict[str, Any]:
-    units = find_units(arr)
     cities = find_cities(arr)
+    units = attach_units_near_cities(arr, find_units(arr), cities)
     villages = find_villages(arr, cities)
     own = [c for c in cities if c.get("owner") == "own"]
     enemy = [c for c in cities if c.get("owner") == "enemy"]

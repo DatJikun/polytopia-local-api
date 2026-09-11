@@ -181,11 +181,11 @@ def _find_walk_mark(
         if (px, py) not in points:
             points.append((px, py))
     for px, py in points:
-        hit = detect.move_on_hex(arr, px, py, pitch)
+        hit = detect.move_on_hex(arr, px, py, pitch, min_n=5)
         if hit.get("ok"):
             return hit, 0.0
     for px, py in points:
-        tint = detect.move_tint_at(arr, px, py, radius=max(14, pitch // 2))
+        tint = detect.move_tint_at(arr, px, py, radius=max(14, pitch // 2), min_n=5)
         if tint.get("ok"):
             return tint, 0.0
     return None, None

@@ -269,10 +269,10 @@ def _patch_count(
     return n
 
 
-def move_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14) -> dict[str, Any]:
+def move_tint_at(arr: np.ndarray, x: int, y: int, radius: int = 14, min_n: int = 5) -> dict[str, Any]:
     """City buildings hide clustered blue hexes; count move-blue under the tile."""
     n = _patch_count(arr, x, y, radius, is_move_rgb)
-    return {"n": n, "ok": n >= 8, "x": int(x), "y": int(y), "kind": "move_tint"}
+    return {"n": n, "ok": n >= int(min_n), "x": int(x), "y": int(y), "kind": "move_tint"}
 
 
 def move_on_hex(
@@ -281,11 +281,13 @@ def move_on_hex(
     y: int,
     pitch: int,
     max_hex: float = 0.55,
+    min_n: int = 5,
 ) -> dict[str, Any]:
     """Centroid of move-blue pixels that sit ON this hex (not the adjacent ring).
 
-    Global ``find_move_marks`` keeps the 12 largest clusters. A city hex is
-    mostly building, so the leftover blue ring is small and often dropped.
+    Global ``find_move_marks`` is largest-first. A city hex is mostly building,
+    so the leftover blue ring is small and often dropped. Live Disrof foot
+    rings can be ~5–8 px at 1280×800.
     """
     h, w = arr.shape[:2]
     pitch = max(8, int(pitch))
@@ -311,7 +313,7 @@ def move_on_hex(
                 xs.append(px)
                 ys.append(py)
     n = len(xs)
-    if n < 8:
+    if n < max(3, int(min_n)):
         return {"n": n, "ok": False, "x": int(x), "y": int(y), "kind": "move_hex"}
     return {
         "n": n,

@@ -1884,6 +1884,160 @@ def test_move_on_hex_finds_foot_ring():
     assert 98 <= hit["y"] <= 110
 
 
+def _m20_disrof_mountain(im: Image.Image, hp_bar: bool = True) -> None:
+    """Live M20: Disrof tile_xy≈[600,144], Bardur on the mountain immediately south."""
+    d = ImageDraw.Draw(im)
+    d.rectangle((565, 100, 635, 165), fill=(90, 85, 80))
+    d.rectangle((580, 95, 620, 130), fill=(150, 74, 144))
+    d.rectangle((550, 168, 650, 188), fill=(180, 180, 178))
+    d.rectangle((558, 172, 570, 184), fill=(224, 188, 63))
+    d.rectangle((588, 172, 600, 184), fill=(224, 188, 63))
+    d.rectangle((575, 174, 578, 182), fill=(40, 40, 40))
+    d.ellipse((575, 188, 625, 232), fill=(230, 230, 235))
+    d.rectangle((588, 204, 612, 222), fill=(110, 85, 72))
+    if hp_bar:
+        d.rectangle((590, 184, 608, 188), fill=(90, 210, 50))
+    d.rectangle((636, 458, 652, 461), fill=(90, 210, 50))
+    d.rectangle((638, 466, 650, 486), fill=(110, 85, 72))
+
+
+def test_observe_detects_unit_on_mountain_south_of_disrof():
+    """Live T36: nearest listed units were y≈462; warrior on mountain south of Disrof missing.
+
+    HP bar sits on the frost-plate edge; the pixel under the bar is snow (water).
+    """
+    from polytopia_api.combat import hex_pitch, tile_dist
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    assert is_water_rgb(230, 230, 235)
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_mountain(im, hp_bar=True)
+    mapped = observe_map(as_rgb(im))
+    enemy = mapped["cities_enemy"]
+    assert enemy, mapped["cities"]
+    disrof = min(enemy, key=lambda c: abs(int(c["x"]) - 600) + abs(int(c.get("tile_xy", [0, c["y"]])[1]) - 144))
+    assert abs(int(disrof["x"]) - 600) < 80, disrof
+    near = [
+        u
+        for u in mapped["units"]
+        if abs(int(u["x"]) - 570) < 60 and 165 <= int(u["y"]) <= 240
+    ]
+    assert near, mapped["units"]
+    u = near[0]
+    assert u.get("owner") in {"own", "unknown"} or u.get("tribe") in {"bardur", "unknown"}
+    assert u.get("tile")
+    pitch = hex_pitch(1280, 800)
+    origin = (int(disrof["x"]), int(disrof.get("plate_y") or disrof["y"]))
+    assert tile_dist(int(u["x"]), int(u["y"]), origin[0], origin[1], pitch) <= 2.3, (u, origin, disrof)
+    south = [u for u in mapped["units"] if int(u["y"]) >= 430]
+    assert south, mapped["units"]
+
+
+def test_leather_unit_south_of_disrof_without_hp_bar():
+    """Nameplate can fully cover the lime bar; Bardur hide on the south hex still counts."""
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import observe_map
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    im = Image.new("RGB", (1280, 800), (30, 40, 28))
+    _m20_disrof_mountain(im, hp_bar=False)
+    mapped = observe_map(as_rgb(im))
+    near = [
+        u
+        for u in mapped["units"]
+        if abs(int(u["x"]) - 570) < 60 and 165 <= int(u["y"]) <= 240
+    ]
+    assert near, mapped["units"]
+    assert any(u.get("owner") == "own" or u.get("tribe") == "bardur" for u in near), near
+
+
+def test_stabilize_units_matches_by_tile():
+    from polytopia_api.observe import stabilize_units
+
+    prev = [{"id": "u7", "x": 600, "y": 210, "tile": [17, 8], "owner": "own"}]
+    nxt = [{"x": 602, "y": 184, "tile": [17, 8], "owner": "own", "kind": "unit"}]
+    out = stabilize_units(nxt, prev, keep_missing=True)
+    seen = [u for u in out if u.get("seen") is not False]
+    assert seen and seen[0]["id"] == "u7"
+
+
+def test_move_to_from_mountain_unit_stands_on_city():
+    """Select the mountain-south unit, click city-hex blue, stood_on_city."""
+    from unittest.mock import patch
+
+    from polytopia_api import commands
+    from polytopia_api.observe import register_cities, register_units, reset as reset_obs
+
+    reset_obs()
+    coords.reset()
+    coords.set_frame(1280, 800)
+    city = {
+        "id": "c16_5",
+        "kind": "city",
+        "x": 600,
+        "y": 144,
+        "plate_y": 178,
+        "tile": [16, 5],
+        "tile_xy": [600, 144],
+        "tribe": "vengir",
+        "owner": "enemy",
+    }
+    register_cities([city])
+    register_units([{"id": "u3", "kind": "unit", "x": 600, "y": 210, "owner": "own", "tile": [16, 8]}])
+    clicks: list[tuple[int, int]] = []
+
+    def fake_click(x, y, space="screen", repeats=1):
+        clicks.append((int(x), int(y)))
+        return {"ok": True, "x": int(x), "y": int(y)}
+
+    foot = {"id": "m_foot", "x": 600, "y": 162, "n": 18}
+    before = {
+        "layout": {"frame": [1280, 800]},
+        "cities": [city],
+        "cities_enemy": [city],
+        "move_marks": [foot],
+        "units": [{"id": "u3", "x": 600, "y": 210, "owner": "own", "near_city_id": "c16_5"}],
+        "unit": {"can_move": True, "no_actions": False, "unit": "warrior"},
+        "overlay": {},
+        "ready": {},
+        "hud": {},
+        "turn_diff": None,
+    }
+    after = {
+        **before,
+        "move_marks": [],
+        "units": [{"id": "u3", "x": 600, "y": 162, "owner": "own"}],
+        "unit": {"can_move": False, "capture": True, "no_actions": False, "unit": "warrior"},
+        "ready": {"capture": True},
+    }
+    selected = {"ok": True, "unit": before["unit"]}
+    with patch.object(commands, "remember", return_value=before), patch.object(
+        commands, "observe", return_value=after
+    ), patch.object(commands, "select_unit", return_value=selected), patch.object(
+        commands, "_click", side_effect=fake_click
+    ), patch.object(commands, "_sleep"):
+        r = commands.move_to(from_id="u3", city_id="c16_5")
+    assert clicks and clicks[0] == (600, 162), clicks
+    assert r["ok"] is True and r["stood_on_city"] is True, r
+    panel_blob = {"x": 180, "y": 740, "n": 200}
+    cap_state = {
+        **after,
+        "overlay": {"capture_blobs": [panel_blob]},
+        "ready": {"capture": True},
+        "unit": {"capture": True, "no_actions": False},
+    }
+    with patch.object(commands, "remember", return_value=cap_state), patch.object(
+        commands, "observe", return_value={**cap_state, "cities_enemy": [], "cities_own": [{**city, "owner": "own", "tribe": "bardur"}]}
+    ), patch.object(commands, "_click", side_effect=fake_click), patch.object(commands, "_sleep"):
+        cap = commands.capture(city_id="c16_5")
+    assert cap.get("captured") is True, cap
+    reset_obs()
+
+
 def test_attack_fast_no_mark_not_timeout():
     """Negative /attack must return no_mark quickly — not burn the 7.5s budget."""
     from unittest.mock import patch
@@ -1977,6 +2131,10 @@ if __name__ == "__main__":
     test_move_to_xy_walks_onto_city_not_plate()
     test_city_tile_center_lifts_plate_xy()
     test_move_on_hex_finds_foot_ring()
+    test_observe_detects_unit_on_mountain_south_of_disrof()
+    test_leather_unit_south_of_disrof_without_hp_bar()
+    test_stabilize_units_matches_by_tile()
+    test_move_to_from_mountain_unit_stands_on_city()
     test_attack_fast_no_mark_not_timeout()
     test_dock_zone_blocks_end_turn_pixels()
     print("ok")
