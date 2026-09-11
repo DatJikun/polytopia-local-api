@@ -609,6 +609,15 @@ def _draw_mid_map_own_phantom(d, cx: int = 441, plate_y: int = 480) -> None:
     d.ellipse((cx + 28, plate_y - 4, cx + 42, plate_y + 8), fill=(224, 188, 63))
 
 
+def _draw_tall_sparse_frost_phantom(d, cx: int = 608, plate_y: int = 379) -> None:
+    """Live T46 c17_14: tall empty wood bbox + frost + gold, not a longhouse."""
+    for i in range(5):
+        yy = plate_y - 52 + i * 10
+        d.rectangle((cx - 2, yy, cx + 1, yy + 2), fill=(90, 85, 80))
+    d.rectangle((cx - 40, plate_y - 8, cx + 40, plate_y + 10), fill=(180, 180, 178))
+    d.ellipse((cx + 20, plate_y - 4, cx + 34, plate_y + 8), fill=(224, 188, 63))
+
+
 def _draw_disrof_city(d, cx: int, plate_y: int, lamps: bool = True, roof: bool = True) -> None:
     """Moonrise Disrof: dark stone + magenta roof and/or gold window lamps."""
     d.rectangle((cx - 35, plate_y - 82, cx + 35, plate_y - 20), fill=(90, 85, 80))
@@ -2180,6 +2189,68 @@ def test_own_modest_warm_n_longhouses_are_not_dropped() -> None:
     assert len(out) == 1
     assert out[0]["id"] == "c10_22"
 
+
+def test_tall_sparse_frost_c17_14_dropped_live_longhouses_kept():
+    """Live T46 after #33: cities_own=3 vs Game Stats Bardur 2.
+
+    Phantom c17_14 @(608,379) warm=67 wood_h=48 dens=0.021 gold_lamps+bardur_wood.
+    #33 short∧sparse (wh<34 && dens<0.38) kept it. Bufla/Orkork stay; no warm_n>=500.
+    """
+    from polytopia_api.detect import as_rgb
+    from polytopia_api.entities import _is_real_own_hit, observe_map, session_cities
+
+    coords.reset()
+    coords.set_frame(1280, 800)
+    bufla = {
+        "id": "c7_16", "city_id": "c7_16", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 248, "y": 450, "plate_y": 450, "tile": [7, 16], "n": 1200, "w": 90,
+        "warm_n": 258, "wood_w": 40, "wood_h": 72, "wood_dens": 0.08, "seen": True,
+    }
+    orkork = {
+        "id": "c16_24", "city_id": "c16_24", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_star", "bardur_wood"],
+        "x": 570, "y": 667, "plate_y": 667, "tile": [16, 24], "n": 1100, "w": 80,
+        "warm_n": 308, "wood_w": 42, "wood_h": 69, "wood_dens": 0.091, "seen": True,
+    }
+    phantom = {
+        "id": "c17_14", "city_id": "c17_14", "tribe": "bardur", "owner": "own",
+        "name": None, "confidence": 0.72,
+        "evidence": ["frost_plate", "gold_lamps", "bardur_wood"],
+        "x": 608, "y": 379, "plate_y": 379, "tile": [17, 14], "n": 400, "w": 60,
+        "warm_n": 67, "wood_w": 18, "wood_h": 48, "wood_dens": 0.021, "seen": True,
+    }
+    twin = dict(phantom)
+    twin["id"] = twin["city_id"] = "c18_13"
+    twin["x"], twin["y"], twin["plate_y"] = 640, 360, 360
+    twin["tile"] = [18, 13]
+    assert _is_real_own_hit(bufla) and _is_real_own_hit(orkork)
+    assert not _is_real_own_hit(phantom) and not _is_real_own_hit(twin)
+    # #32's floor would drop these live longhouses — must stay False.
+    assert bufla["warm_n"] < 500 and orkork["warm_n"] < 500
+    out = session_cities([bufla, orkork, phantom, twin])
+    own_ids = {c["id"] for c in out if c.get("owner") == "own"}
+    assert own_ids == {"c7_16", "c16_24"}, out
+
+    im = Image.new("RGB", (1280, 800), (22, 24, 28))
+    d = ImageDraw.Draw(im)
+    _draw_bardur_city(d, 248, 450)
+    _draw_bardur_city(d, 570, 667)
+    _draw_tall_sparse_frost_phantom(d, 608, 379)
+    _draw_disrof_city(d, 980, 260)
+    _draw_disrof_city(d, 1100, 420)
+    _draw_disrof_city(d, 900, 560)
+    mapped = observe_map(as_rgb(im))
+    own = mapped["cities_own"]
+    assert len(own) == 2, mapped["cities"]
+    assert all(c["tribe"] == "bardur" and c["owner"] == "own" for c in own), own
+    assert all(
+        abs(int(c["x"]) - 608) > 36 or abs(int(c.get("plate_y") or c["y"]) - 379) > 36
+        for c in own
+    ), own
+    assert any(c.get("tribe") == "vengir" for c in mapped["cities_enemy"]), mapped["cities"]
 
 
 def test_two_bardur_match_screen_not_frost_phantoms():
@@ -4829,6 +4900,7 @@ if __name__ == "__main__":
     test_own_close_plates_merge_adjacent_stay_two()
     test_own_neighbors_stay_two_even_if_frame_is_1920()
     test_own_modest_warm_n_longhouses_are_not_dropped()
+    test_tall_sparse_frost_c17_14_dropped_live_longhouses_kept()
     test_own_phantoms_do_not_accumulate_across_frames()
     test_recruit_timeout_skips_full_observe()
     test_recruit_uses_marks_observe_for_train()
